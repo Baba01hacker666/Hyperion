@@ -4,21 +4,13 @@ import (
 	"hyperion/internal/board"
 )
 
-const (
-	PawnValue   = 100
-	KnightValue = 320
-	BishopValue = 330
-	RookValue   = 500
-	QueenValue  = 900
-)
-
-var pieceValues = [6]int{PawnValue, KnightValue, BishopValue, RookValue, QueenValue, 0}
-
-// Evaluate returns a static evaluation of the board from the perspective of the side to move.
-// Positive values mean the side to move is winning.
+// Evaluate returns a tapered evaluation of the board from the perspective of the side to move.
 func Evaluate(b *board.Board) int {
-	whiteScore := 0
-	blackScore := 0
+	whiteMg := 0
+	whiteEg := 0
+	blackMg := 0
+	blackEg := 0
+	gamePhase := 0
 
 	for sq := 0; sq < 64; sq++ {
 		p := b.Squares[sq]
@@ -29,20 +21,41 @@ func Evaluate(b *board.Board) int {
 		color := p.Color()
 		pt := p.Type()
 
-		val := pieceValues[pt]
+		// Accumulate game phase
+		switch pt {
+		case board.Knight:
+			gamePhase += KnightPhase
+		case board.Bishop:
+			gamePhase += BishopPhase
+		case board.Rook:
+			gamePhase += RookPhase
+		case board.Queen:
+			gamePhase += QueenPhase
+		}
 
-		// Add Piece-Square Table value
 		if color == board.White {
-			val += pstWhite[pt][sq^56]
-			whiteScore += val
+			sqIdx := sq ^ 56
+			whiteMg += mgValue[pt] + mgPst[pt][sqIdx]
+			whiteEg += egValue[pt] + egPst[pt][sqIdx]
 		} else {
-			// For black, sq directly maps top-to-bottom (Rank 8 = index 56..63)
-			val += pstWhite[pt][sq]
-			blackScore += val
+			blackMg += mgValue[pt] + mgPst[pt][sq]
+			blackEg += egValue[pt] + egPst[pt][sq]
 		}
 	}
 
-	eval := whiteScore - blackScore
+	if gamePhase > TotalPhase {
+		gamePhase = TotalPhase
+	}
+
+	mgScore := whiteMg - blackMg
+	egScore := whiteEg - blackEg
+
+	// Interpolate between middlegame and endgame scores
+	mgWeight := gamePhase
+	egWeight := TotalPhase - gamePhase
+
+	eval := (mgScore*mgWeight + egScore*egWeight) / TotalPhase
+
 	if b.SideToMove == board.Black {
 		eval = -eval
 	}
