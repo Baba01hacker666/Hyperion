@@ -40,7 +40,6 @@ func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
 	beta := Infinity
 
 	for depth := 1; depth <= maxDepth; depth++ {
-		// Aspiration Window
 		window := 50
 		if depth >= 4 {
 			alpha = overallBestScore - window
@@ -70,7 +69,6 @@ func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
 
 			researches++
 			if researches >= 2 {
-				// Fallback to full window if failing repeatedly
 				alpha = -Infinity
 				beta = Infinity
 				bestMove, score = s.searchRoot(b, depth, alpha, beta)
@@ -149,7 +147,6 @@ func (s *Searcher) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 	kingPos := board.Square((b.Colors[us] & b.Pieces[board.King]).LSB())
 	inCheck := attack.IsSquareAttacked(b, kingPos, them)
 
-	// Check extension
 	if inCheck {
 		depth++
 	}
@@ -214,7 +211,6 @@ func (s *Searcher) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 		if i == 0 {
 			score = -s.alphaBeta(b, depth-1, -beta, -alpha, ply+1)
 		} else {
-			// 3. Late Move Reduction (LMR) & Zero Window Search
 			reduction := 0
 			if i >= 3 && depth >= 3 && isQuiet && !inCheck {
 				reduction = 1
@@ -259,7 +255,7 @@ func (s *Searcher) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 	return bestScore
 }
 
-// Quiescence Search with Delta Pruning.
+// Quiescence Search with SEE (Static Exchange Evaluation) & Delta Pruning.
 func (s *Searcher) quiescence(b *board.Board, alpha, beta, ply int) int {
 	s.Nodes++
 	standPat := evaluation.Evaluate(b)
@@ -271,7 +267,6 @@ func (s *Searcher) quiescence(b *board.Board, alpha, beta, ply int) int {
 		alpha = standPat
 	}
 
-	// Cap quiescence depth to 12 plies to prevent midgame explosion
 	if ply >= MaxDepth || ply >= 20 {
 		return standPat
 	}
@@ -289,12 +284,8 @@ func (s *Searcher) quiescence(b *board.Board, alpha, beta, ply int) int {
 			continue
 		}
 
-		// Delta Pruning: If standPat + value of captured piece + 200 < alpha, prune!
-		capturedSq := board.Square(m.To())
-		capturedPiece := b.PieceAt(capturedSq).Type()
-		capturedVal := pieceValue(capturedPiece)
-
-		if standPat+capturedVal+200 < alpha && !m.IsPromotion() {
+		// Static Exchange Evaluation (SEE): Prune losing captures
+		if !evaluation.SEE(b, m, 0) {
 			continue
 		}
 
@@ -320,23 +311,6 @@ func (s *Searcher) quiescence(b *board.Board, alpha, beta, ply int) int {
 	return alpha
 }
 
-func pieceValue(pt board.PieceType) int {
-	switch pt {
-	case board.Pawn:
-		return 100
-	case board.Knight:
-		return 320
-	case board.Bishop:
-		return 330
-	case board.Rook:
-		return 500
-	case board.Queen:
-		return 900
-	default:
-		return 0
-	}
-}
-
 type scoredMove struct {
 	m     move.Move
 	score int
@@ -358,7 +332,12 @@ func (s *Searcher) orderMoves(b *board.Board, list *movegen.MoveList, ttMove mov
 			attackerSq := board.Square(m.From())
 			attacker := b.PieceAt(attackerSq).Type()
 
-			score = 10000 + (int(victim)*100 - int(attacker))
+			// Check Static Exchange Evaluation (SEE)
+			if evaluation.SEE(b, m, 0) {
+				score = 10000 + (int(victim)*100 - int(attacker))
+			} else {
+				score = -5000 + (int(victim)*100 - int(attacker))
+			}
 		} else {
 			if ply < MaxDepth {
 				if m == s.KillerMoves[ply][0] {
