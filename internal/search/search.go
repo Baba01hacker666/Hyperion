@@ -23,6 +23,8 @@ type Searcher struct {
 	TT          *tt.Table
 	KillerMoves [MaxDepth][2]move.Move
 	History     [2][64][64]int
+	StartTime   time.Time
+	MaxTime     time.Duration
 }
 
 func NewSearcher(ttSizeMB int) *Searcher {
@@ -37,14 +39,14 @@ func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
 	var overallBestMove move.Move
 	var overallBestScore int
 
-	startTime := time.Now()
-	maxTime := 4000 * time.Millisecond
+	s.StartTime = time.Now()
+	s.MaxTime = 4000 * time.Millisecond
 
 	alpha := -Infinity
 	beta := Infinity
 
 	for depth := 1; depth <= maxDepth; depth++ {
-		if depth > 1 && time.Since(startTime) > maxTime {
+		if depth > 1 && time.Since(s.StartTime) > s.MaxTime {
 			break
 		}
 		window := 50
@@ -112,6 +114,9 @@ func (s *Searcher) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move
 	var undo board.Undo
 
 	for i := 0; i < list.Count; i++ {
+		if i > 0 && time.Since(s.StartTime) > s.MaxTime {
+			break
+		}
 		m := list.Moves[i]
 		b.MakeMove(m, &undo)
 
