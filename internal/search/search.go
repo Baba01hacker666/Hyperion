@@ -38,7 +38,7 @@ func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
 	var overallBestScore int
 
 	startTime := time.Now()
-	maxTime := 1500 * time.Millisecond
+	maxTime := 4000 * time.Millisecond
 
 	alpha := -Infinity
 	beta := Infinity
