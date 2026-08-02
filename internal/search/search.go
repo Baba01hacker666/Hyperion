@@ -41,6 +41,9 @@ func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
 
 	s.StartTime = time.Now()
 	s.MaxTime = 4000 * time.Millisecond
+	if evaluation.CurrentStyle == evaluation.StyleEvil {
+		s.MaxTime = 12000 * time.Millisecond // Evil Mode: 12 seconds per move!
+	}
 
 	alpha := -Infinity
 	beta := Infinity

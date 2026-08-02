@@ -10,6 +10,7 @@ const (
 	StyleBalanced Style = iota
 	StyleGamble
 	StyleDefense
+	StyleEvil
 )
 
 var CurrentStyle = StyleBalanced
@@ -73,11 +74,11 @@ func Evaluate(b *board.Board) int {
 
 	// Apply Play Style Modifiers
 	if CurrentStyle == StyleGamble {
-		// Gamble Mode: Boost attack incentive & reduce pawn sacrifice penalties
 		eval += evaluateGambleBonus(b)
 	} else if CurrentStyle == StyleDefense {
-		// Defense Mode: Boost King safety & solid structure
 		eval += evaluateDefenseBonus(b)
+	} else if CurrentStyle == StyleEvil {
+		eval += evaluateEvilBonus(b)
 	}
 
 	if b.SideToMove == board.Black {
@@ -92,13 +93,12 @@ func evaluateGambleBonus(b *board.Board) int {
 	us := b.SideToMove
 	them := us.Opposite()
 
-	// Reward pieces attacking squares surrounding enemy King
 	enemyKingSq := board.Square((b.Colors[them] & b.Pieces[board.King]).LSB())
 	kingZone := getKingZone(enemyKingSq)
 
 	friendlyAttackers := (b.Colors[us] &^ b.Pieces[board.Pawn] &^ b.Pieces[board.King])
 	if (friendlyAttackers & kingZone) != 0 {
-		score += 80 // Aggressive attack bonus!
+		score += 80
 	}
 
 	return score
@@ -109,7 +109,6 @@ func evaluateDefenseBonus(b *board.Board) int {
 	us := b.SideToMove
 	kingSq := board.Square((b.Colors[us] & b.Pieces[board.King]).LSB())
 
-	// Solid Defense: Extra bonus for intact pawn shield
 	file := kingSq.File()
 	rank := kingSq.Rank()
 	friendlyPawns := b.Pieces[board.Pawn] & b.Colors[us]
@@ -118,9 +117,27 @@ func evaluateDefenseBonus(b *board.Board) int {
 		for f := max(0, int(file)-1); f <= min(7, int(file)+1); f++ {
 			shieldFile := getFileMask(f)
 			if (friendlyPawns & shieldFile) != 0 {
-				score += 25 // Double fortress shield bonus!
+				score += 25
 			}
 		}
+	}
+
+	return score
+}
+
+func evaluateEvilBonus(b *board.Board) int {
+	score := 0
+	us := b.SideToMove
+	them := us.Opposite()
+
+	// Evil Mode: Maximum aggression, king constriction, and passed pawn dominance
+	enemyKingSq := board.Square((b.Colors[them] & b.Pieces[board.King]).LSB())
+	kingZone := getKingZone(enemyKingSq)
+
+	// Heavily penalize enemy king safety
+	friendlyAttackers := (b.Colors[us] &^ b.Pieces[board.King])
+	if (friendlyAttackers & kingZone) != 0 {
+		score += 140 // Ruthless king attack bonus!
 	}
 
 	return score

@@ -40,7 +40,7 @@ func Loop() {
 		case "uci":
 			fmt.Println("id name Hyperion")
 			fmt.Println("id author Antigravity")
-			fmt.Println("option name Style type combo default normal var normal var gamble var defense")
+			fmt.Println("option name Style type combo default normal var normal var gamble var defense var evil")
 			fmt.Println("option name Hash type spin default 64 min 1 max 1024")
 			fmt.Println("uciok")
 		case "isready":
@@ -78,6 +78,8 @@ func parseSetOption(args []string) {
 			evaluation.SetStyle(evaluation.StyleGamble)
 		case "defense":
 			evaluation.SetStyle(evaluation.StyleDefense)
+		case "evil":
+			evaluation.SetStyle(evaluation.StyleEvil)
 		default:
 			evaluation.SetStyle(evaluation.StyleBalanced)
 		}
