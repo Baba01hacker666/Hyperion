@@ -8,6 +8,7 @@ import (
 	"hyperion/internal/movegen"
 	"hyperion/internal/tt"
 	"sort"
+	"time"
 )
 
 const (
@@ -36,10 +37,16 @@ func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
 	var overallBestMove move.Move
 	var overallBestScore int
 
+	startTime := time.Now()
+	maxTime := 1500 * time.Millisecond
+
 	alpha := -Infinity
 	beta := Infinity
 
 	for depth := 1; depth <= maxDepth; depth++ {
+		if depth > 1 && time.Since(startTime) > maxTime {
+			break
+		}
 		window := 50
 		if depth >= 4 {
 			alpha = overallBestScore - window
