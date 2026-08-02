@@ -4,6 +4,21 @@ import (
 	"hyperion/internal/board"
 )
 
+type Style int
+
+const (
+	StyleBalanced Style = iota
+	StyleGamble
+	StyleDefense
+)
+
+var CurrentStyle = StyleBalanced
+
+// SetStyle configures the engine's play style.
+func SetStyle(s Style) {
+	CurrentStyle = s
+}
+
 // Evaluate returns a tapered evaluation of the board from the perspective of the side to move.
 func Evaluate(b *board.Board) int {
 	whiteMg := 0
@@ -56,9 +71,57 @@ func Evaluate(b *board.Board) int {
 
 	eval := (mgScore*mgWeight+egScore*egWeight)/TotalPhase + EvaluatePositional(b)
 
+	// Apply Play Style Modifiers
+	if CurrentStyle == StyleGamble {
+		// Gamble Mode: Boost attack incentive & reduce pawn sacrifice penalties
+		eval += evaluateGambleBonus(b)
+	} else if CurrentStyle == StyleDefense {
+		// Defense Mode: Boost King safety & solid structure
+		eval += evaluateDefenseBonus(b)
+	}
+
 	if b.SideToMove == board.Black {
 		eval = -eval
 	}
 
 	return eval
+}
+
+func evaluateGambleBonus(b *board.Board) int {
+	score := 0
+	us := b.SideToMove
+	them := us.Opposite()
+
+	// Reward pieces attacking squares surrounding enemy King
+	enemyKingSq := board.Square((b.Colors[them] & b.Pieces[board.King]).LSB())
+	kingZone := getKingZone(enemyKingSq)
+
+	friendlyAttackers := (b.Colors[us] &^ b.Pieces[board.Pawn] &^ b.Pieces[board.King])
+	if (friendlyAttackers & kingZone) != 0 {
+		score += 80 // Aggressive attack bonus!
+	}
+
+	return score
+}
+
+func evaluateDefenseBonus(b *board.Board) int {
+	score := 0
+	us := b.SideToMove
+	kingSq := board.Square((b.Colors[us] & b.Pieces[board.King]).LSB())
+
+	// Solid Defense: Extra bonus for intact pawn shield
+	file := kingSq.File()
+	rank := kingSq.Rank()
+	friendlyPawns := b.Pieces[board.Pawn] & b.Colors[us]
+
+	if (us == board.White && rank <= 1) || (us == board.Black && rank >= 6) {
+		for f := max(0, int(file)-1); f <= min(7, int(file)+1); f++ {
+			shieldFile := getFileMask(f)
+			if (friendlyPawns & shieldFile) != 0 {
+				score += 25 // Double fortress shield bonus!
+			}
+		}
+	}
+
+	return score
 }

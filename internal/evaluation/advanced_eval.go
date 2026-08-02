@@ -1,6 +1,7 @@
 package evaluation
 
 import (
+	"hyperion/internal/attack"
 	"hyperion/internal/bitboard"
 	"hyperion/internal/board"
 	"hyperion/internal/magic"
@@ -160,4 +161,12 @@ func evaluateKingSafety(b *board.Board, color board.Color) int {
 	}
 
 	return score
+}
+
+func getKingZone(sq board.Square) bitboard.Bitboard {
+	return attack.KingAttacks[sq]
+}
+
+func getFileMask(f int) bitboard.Bitboard {
+	return bitboard.FileMasks[f]
 }

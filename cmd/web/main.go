@@ -18,11 +18,16 @@ func handleMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	style := r.URL.Query().Get("style")
+	if style == "" {
+		style = "normal"
+	}
+
 	// Calculate absolute path to the binary to avoid working directory issues
 	binaryPath, _ := filepath.Abs("bin/hyperion")
 
 	// Command to execute
-	input := fmt.Sprintf("position fen %s\ngo depth 5\nquit\n", fen)
+	input := fmt.Sprintf("setoption name Style value %s\nposition fen %s\ngo depth 5\nquit\n", style, fen)
 
 	cmd := exec.Command(binaryPath)
 	cmd.Stdin = strings.NewReader(input)

@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"fmt"
 	"hyperion/internal/board"
+	"hyperion/internal/evaluation"
 	"hyperion/internal/movegen"
 	"hyperion/internal/search"
 	"os"
 	"strconv"
 	"strings"
 )
+
+var hashSizeMB = 64
 
 // Loop starts the UCI protocol listening loop.
 func Loop() {
@@ -35,9 +38,13 @@ func Loop() {
 		case "uci":
 			fmt.Println("id name Hyperion")
 			fmt.Println("id author Antigravity")
+			fmt.Println("option name Style type combo default normal var normal var gamble var defense")
+			fmt.Println("option name Hash type spin default 64 min 1 max 1024")
 			fmt.Println("uciok")
 		case "isready":
 			fmt.Println("readyok")
+		case "setoption":
+			parseSetOption(parts[1:])
 		case "ucinewgame":
 			b = board.New()
 			b.SetFEN(board.StartFEN)
@@ -47,6 +54,34 @@ func Loop() {
 			parseGo(b, parts[1:])
 		case "quit":
 			return
+		}
+	}
+}
+
+func parseSetOption(args []string) {
+	name := ""
+	value := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == "name" && i+1 < len(args) {
+			name = strings.ToLower(args[i+1])
+		}
+		if args[i] == "value" && i+1 < len(args) {
+			value = strings.ToLower(args[i+1])
+		}
+	}
+
+	if name == "style" {
+		switch value {
+		case "gamble":
+			evaluation.SetStyle(evaluation.StyleGamble)
+		case "defense":
+			evaluation.SetStyle(evaluation.StyleDefense)
+		default:
+			evaluation.SetStyle(evaluation.StyleBalanced)
+		}
+	} else if name == "hash" {
+		if sz, err := strconv.Atoi(value); err == nil && sz >= 1 {
+			hashSizeMB = sz
 		}
 	}
 }
@@ -99,7 +134,7 @@ func parsePosition(b *board.Board, args []string) {
 }
 
 func parseGo(b *board.Board, args []string) {
-	depth := 5 // Default fixed depth for now
+	depth := 5 // Default fixed depth
 
 	for i := 0; i < len(args); i++ {
 		if args[i] == "depth" && i+1 < len(args) {
@@ -109,7 +144,7 @@ func parseGo(b *board.Board, args []string) {
 		}
 	}
 
-	searcher := search.NewSearcher(64)
+	searcher := search.NewSearcher(hashSizeMB)
 	bestMove, score := searcher.Search(b, depth)
 
 	fmt.Printf("info depth %d score cp %d nodes %d\n", depth, score, searcher.Nodes)

@@ -178,6 +178,15 @@
             </select>
         </div>
 
+        <div class="setting-group">
+            <label for="hyperion-style">Hyperion Play Style:</label>
+            <select id="hyperion-style">
+                <option value="normal" selected>⚡ Balanced (Maximum Elo)</option>
+                <option value="gamble">🔥 Aggressive Gamble Mode (Gambits & Attacks)</option>
+                <option value="defense">🛡️ Solid Defense Mode (Fortress Safety)</option>
+            </select>
+        </div>
+
         <div class="btn-group">
             <button id="btn-play-stockfish">Start Match: Hyperion (W) vs Stockfish (B)</button>
             <button id="btn-play-human">Play Yourself vs Hyperion (You as White)</button>
@@ -305,8 +314,9 @@ $(document).ready(function() {
     }
 
     function getHyperionMove() {
+        const style = $('#hyperion-style').val() || 'normal';
         log("Hyperion (10+ MNPS Go Engine) is thinking...");
-        $.getJSON('/api/move?fen=' + encodeURIComponent(game.fen()), function(data) {
+        $.getJSON('/api/move?fen=' + encodeURIComponent(game.fen()) + '&style=' + style, function(data) {
             if (data && data.bestmove) {
                 makeMove(data.bestmove);
             } else {
