@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hyperion Chess Arena - Elo Benchmark</title>
+    <!-- jQuery -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <!-- Chessboard.js -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+    <!-- Chess.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --border-color: rgba(255, 255, 255, 0.1);
+            --accent-color: #6366f1;
+            --accent-hover: #4f46e5;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            background: radial-gradient(circle at top left, #1e1b4b, #0f172a);
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .arena-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 30px;
+            max-width: 1050px;
+            width: 100%;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 30px;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+        }
+
+        .board-section {
+            flex: 1 1 420px;
+            max-width: 500px;
+        }
+
+        .panel-section {
+            flex: 1 1 320px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        h1 {
+            margin: 0 0 5px 0;
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(90deg, #818cf8, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        p.subtitle {
+            margin: 0;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .setting-group {
+            background: rgba(15, 23, 42, 0.4);
+            border: 1px solid var(--border-color);
+            padding: 15px;
+            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .setting-group label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        select {
+            background: var(--bg-color);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .btn-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        button {
+            background: var(--accent-color);
+            color: #fff;
+            border: none;
+            padding: 12px 18px;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+        }
+
+        button:hover {
+            background: var(--accent-hover);
+            transform: translateY(-1px);
+        }
+
+        .status-card {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 15px;
+            font-family: monospace;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            color: #38bdf8;
+            flex-grow: 1;
+        }
+
+        /* Chessboard override styles */
+        .board-b72b1 {
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            border: 2px solid var(--border-color);
+        }
+    </style>
+</head>
+<body>
+
+<div class="arena-container">
+    <div class="board-section">
+        <div id="chessboard" style="width: 100%;"></div>
+    </div>
+    
+    <div class="panel-section">
+        <div>
+            <h1>Hyperion Arena</h1>
+            <p class="subtitle">Benchmark Hyperion's Elo against Stockfish</p>
+        </div>
+
+        <div class="setting-group">
+            <label for="sf-level">Stockfish Difficulty Level:</label>
+            <select id="sf-level">
+                <option value="0,1">~200 Elo (Skill 0, Depth 1 - Novice)</option>
+                <option value="0,2" selected>~500 Elo (Skill 0, Depth 2 - Beginner)</option>
+                <option value="0,3">~800 Elo (Skill 0, Depth 3 - Casual)</option>
+                <option value="3,4">~1200 Elo (Skill 3, Depth 4 - Intermediate)</option>
+                <option value="6,5">~1600 Elo (Skill 6, Depth 5 - Advanced)</option>
+                <option value="20,8">~3000 Elo (Skill 20, Max Power)</option>
+            </select>
+        </div>
+
+        <div class="btn-group">
+            <button id="btn-play-stockfish">Start Match: Hyperion (W) vs Stockfish (B)</button>
+            <button id="btn-play-human">Play Yourself vs Hyperion (You as White)</button>
+            <button id="btn-play-random">Hyperion (W) vs Random Engine (B)</button>
+        </div>
+
+        <div class="status-card">
+            <strong style="color: #cbd5e1; display: block; margin-bottom: 5px;">Status Log:</strong>
+            <div id="status">Select difficulty & click a match button above.</div>
+        </div>
+    </div>
+</div>
+
+<script>
+$(document).ready(function() {
+    let board = null;
+    let game = new Chess();
+    let isRunning = false;
+    let mode = 'human'; // 'human' | 'stockfish' | 'random'
+    let stockfishWorker = null;
+
+    // Try initializing Stockfish Worker
+    try {
+        fetch("https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js")
+            .then(res => res.text())
+            .then(code => {
+                const blob = new Blob([code], { type: 'application/javascript' });
+                stockfishWorker = new Worker(URL.createObjectURL(blob));
+                stockfishWorker.onmessage = function(e) {
+                    if (e.data.startsWith("bestmove")) {
+                        const moveStr = e.data.split(" ")[1];
+                        makeMove(moveStr);
+                    }
+                };
+                stockfishWorker.postMessage("uci");
+                setStockfishSkill();
+            }).catch(() => console.log("Stockfish worker CDN disabled/blocked, using fallback."));
+    } catch(e) {
+        console.log("Stockfish initialization skipped.");
+    }
+
+    function setStockfishSkill() {
+        if (!stockfishWorker) return;
+        const val = $('#sf-level').val().split(",");
+        const skill = val[0];
+        stockfishWorker.postMessage("setoption name Skill Level value " + skill);
+    }
+
+    $('#sf-level').change(function() {
+        setStockfishSkill();
+    });
+
+    function log(msg) {
+        $('#status').html(msg);
+    }
+
+    function onDragStart(source, piece, position, orientation) {
+        if (!isRunning || game.game_over()) return false;
+        if (mode !== 'human') return false;
+        if (game.turn() === 'b') return false;
+    }
+
+    function onDrop(source, target) {
+        const move = game.move({
+            from: source,
+            to: target,
+            promotion: 'q'
+        });
+
+        if (move === null) return 'snapback';
+
+        updateGameStatus();
+        window.setTimeout(nextTurn, 250);
+    }
+
+    function onSnapEnd() {
+        board.position(game.fen());
+    }
+
+    function makeMove(moveStr) {
+        const from = moveStr.substring(0, 2);
+        const to = moveStr.substring(2, 4);
+        const promo = moveStr.length > 4 ? moveStr.substring(4, 5) : undefined;
+
+        game.move({ from, to, promotion: promo });
+        board.position(game.fen());
+        updateGameStatus();
+
+        if (isRunning && !game.game_over()) {
+            window.setTimeout(nextTurn, 250);
+        }
+    }
+
+    function nextTurn() {
+        if (!isRunning || game.game_over()) return;
+
+        const turn = game.turn();
+
+        if (mode === 'human') {
+            if (turn === 'b') {
+                getHyperionMove();
+            }
+        } else if (mode === 'stockfish') {
+            if (turn === 'w') {
+                getHyperionMove();
+            } else {
+                if (stockfishWorker) {
+                    const val = $('#sf-level').val().split(",");
+                    const depth = val[1];
+                    const skillName = $("#sf-level option:selected").text();
+                    log("Stockfish (" + skillName + ") is thinking...");
+                    stockfishWorker.postMessage("position fen " + game.fen());
+                    stockfishWorker.postMessage("go depth " + depth);
+                } else {
+                    getRandomMove();
+                }
+            }
+        } else if (mode === 'random') {
+            if (turn === 'w') {
+                getHyperionMove();
+            } else {
+                getRandomMove();
+            }
+        }
+    }
+
+    function getHyperionMove() {
+        log("Hyperion (10+ MNPS Go Engine) is thinking...");
+        $.getJSON('/api/move?fen=' + encodeURIComponent(game.fen()), function(data) {
+            if (data && data.bestmove) {
+                makeMove(data.bestmove);
+            } else {
+                log("Hyperion error: No move returned.");
+            }
+        }).fail(function() {
+            log("Failed to reach Hyperion backend.");
+        });
+    }
+
+    function getRandomMove() {
+        log("Opponent is thinking...");
+        const moves = game.moves({ verbose: true });
+        if (moves.length === 0) return;
+        const randomMove = moves[Math.floor(Math.random() * moves.length)];
+        const moveStr = randomMove.from + randomMove.to + (randomMove.promotion || '');
+        makeMove(moveStr);
+    }
+
+    function updateGameStatus() {
+        let statusStr = game.turn() === 'w' ? 'White to move' : 'Black to move';
+        if (game.in_checkmate()) {
+            statusStr = 'Game Over: Checkmate!';
+            isRunning = false;
+        } else if (game.in_draw()) {
+            statusStr = 'Game Over: Draw!';
+            isRunning = false;
+        } else if (game.in_check()) {
+            statusStr += ' (Check!)';
+        }
+        log(statusStr);
+    }
+
+    function startNewGame(selectedMode) {
+        mode = selectedMode;
+        setStockfishSkill();
+        game.reset();
+        board.position('start');
+        isRunning = true;
+        updateGameStatus();
+        if (mode !== 'human') {
+            window.setTimeout(nextTurn, 250);
+        }
+    }
+
+    $('#btn-play-human').click(function() { startNewGame('human'); });
+    $('#btn-play-stockfish').click(function() { startNewGame('stockfish'); });
+    $('#btn-play-random').click(function() { startNewGame('random'); });
+
+    // Initialize Chessboard with official Wikipedia pieces CDN
+    board = Chessboard('chessboard', {
+        draggable: true,
+        position: 'start',
+        onDragStart: onDragStart,
+        onDrop: onDrop,
+        onSnapEnd: onSnapEnd,
+        pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+    });
+});
+</script>
+</body>
+</html>

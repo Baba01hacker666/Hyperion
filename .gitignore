@@ -1,0 +1,17 @@
+# Binaries
+bin/
+*.exe
+*.exe.test
+*.out
+
+# Go test binaries
+*.test
+
+# IDE / OS generated
+.DS_Store
+.idea/
+.vscode/
+
+# Scratch and system generated
+.system_generated/
+scratch/
