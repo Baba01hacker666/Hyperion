@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"hyperion/internal/board"
 	"hyperion/internal/evaluation"
+	"hyperion/internal/move"
 	"hyperion/internal/movegen"
+	"hyperion/internal/opening"
 	"hyperion/internal/search"
 	"os"
 	"strconv"
@@ -134,6 +136,13 @@ func parsePosition(b *board.Board, args []string) {
 }
 
 func parseGo(b *board.Board, args []string) {
+	// Check opening book first
+	if bookMove := opening.GetBookMove(b); bookMove != move.NullMove {
+		fmt.Printf("info string opening book move\n")
+		fmt.Printf("bestmove %s\n", bookMove.String())
+		return
+	}
+
 	depth := 5 // Default fixed depth
 
 	for i := 0; i < len(args); i++ {
