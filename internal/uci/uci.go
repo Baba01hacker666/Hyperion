@@ -143,7 +143,7 @@ func parseGo(b *board.Board, args []string) {
 		return
 	}
 
-	depth := 5 // Default fixed depth
+	depth := 8 // Default search depth 8 for 2000+ Elo strength
 
 	for i := 0; i < len(args); i++ {
 		if args[i] == "depth" && i+1 < len(args) {

@@ -27,7 +27,7 @@ func handleMove(w http.ResponseWriter, r *http.Request) {
 	binaryPath, _ := filepath.Abs("bin/hyperion")
 
 	// Command to execute
-	input := fmt.Sprintf("setoption name Style value %s\nposition fen %s\ngo depth 5\nquit\n", style, fen)
+	input := fmt.Sprintf("setoption name Style value %s\nposition fen %s\ngo depth 8\nquit\n", style, fen)
 
 	cmd := exec.Command(binaryPath)
 	cmd.Stdin = strings.NewReader(input)
