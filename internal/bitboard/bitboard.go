@@ -33,6 +33,9 @@ const (
 	Rank8 Bitboard = Rank1 << 56
 )
 
+var FileMasks = [8]Bitboard{FileA, FileB, FileC, FileD, FileE, FileF, FileG, FileH}
+var RankMasks = [8]Bitboard{Rank1, Rank2, Rank3, Rank4, Rank5, Rank6, Rank7, Rank8}
+
 // Set sets the bit at the given square index (0-63).
 func (b *Bitboard) Set(sq int) {
 	*b |= (1 << sq)

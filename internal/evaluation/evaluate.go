@@ -54,7 +54,7 @@ func Evaluate(b *board.Board) int {
 	mgWeight := gamePhase
 	egWeight := TotalPhase - gamePhase
 
-	eval := (mgScore*mgWeight + egScore*egWeight) / TotalPhase
+	eval := (mgScore*mgWeight+egScore*egWeight)/TotalPhase + EvaluatePositional(b)
 
 	if b.SideToMove == board.Black {
 		eval = -eval
