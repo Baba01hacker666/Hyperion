@@ -192,6 +192,7 @@
             <button id="btn-play-stockfish">Start Match: Hyperion (W) vs Stockfish (B)</button>
             <button id="btn-play-human">Play Yourself vs Hyperion (You as White)</button>
             <button id="btn-play-random">Hyperion (W) vs Random Engine (B)</button>
+            <button id="btn-export-pgn" style="background: #10b981; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);">📥 Export Game PGN</button>
         </div>
 
         <div class="status-card">
@@ -366,6 +367,33 @@ $(document).ready(function() {
     $('#btn-play-human').click(function() { startNewGame('human'); });
     $('#btn-play-stockfish').click(function() { startNewGame('stockfish'); });
     $('#btn-play-random').click(function() { startNewGame('random'); });
+
+    $('#btn-export-pgn').click(function() {
+        const pgn = game.pgn();
+        if (!pgn || pgn.trim() === '') {
+            alert('No moves have been played yet!');
+            return;
+        }
+
+        let pgnHeader = '[Event "Hyperion Web Arena"]\n';
+        pgnHeader += '[Site "Localhost"]\n';
+        pgnHeader += '[Date "' + new Date().toISOString().split('T')[0].replace(/-/g, '.') + '"]\n';
+        pgnHeader += '[White "' + (mode === 'human' ? 'You' : 'Hyperion') + '"]\n';
+        pgnHeader += '[Black "' + (mode === 'human' ? 'Hyperion' : (mode === 'stockfish' ? 'Stockfish' : 'Random Engine')) + '"]\n';
+        pgnHeader += '[Result "' + (game.in_checkmate() ? (game.turn() === 'w' ? '0-1' : '1-0') : (game.in_draw() ? '1/2-1/2' : '*')) + '"]\n\n';
+
+        const fullPgn = pgnHeader + pgn;
+
+        const blob = new Blob([fullPgn], { type: 'text/plain;charset=utf-8' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'hyperion_game_' + Date.now() + '.pgn';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        log('📥 PGN game file exported successfully!');
+    });
 
     // Initialize Chessboard with official Wikipedia pieces CDN
     board = Chessboard('chessboard', {
