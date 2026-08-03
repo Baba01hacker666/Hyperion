@@ -7,6 +7,7 @@ import (
 	"hyperion/internal/move"
 	"hyperion/internal/movegen"
 	"hyperion/internal/tt"
+	"math"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,29 @@ const (
 	MateVal  = 20000
 	MaxDepth = 64
 )
+
+var lmrTable [MaxDepth][64]int
+
+func init() {
+	for depth := 1; depth < MaxDepth; depth++ {
+		for moves := 1; moves < 64; moves++ {
+			lmrTable[depth][moves] = int(0.75 + math.Log(float64(depth))*math.Log(float64(moves))/2.25)
+		}
+	}
+}
+
+func applyHistoryBonus(entry *int, bonus int, maxVal int) {
+	if bonus > maxVal {
+		bonus = maxVal
+	} else if bonus < -maxVal {
+		bonus = -maxVal
+	}
+	absVal := *entry
+	if absVal < 0 {
+		absVal = -absVal
+	}
+	*entry += bonus - (bonus * absVal / maxVal)
+}
 
 type Limits struct {
 	Depth     int
@@ -392,7 +416,18 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		} else {
 			reduction := 0
 			if i >= 3 && depth >= 3 && isQuiet && !inCheck {
-				reduction = 1
+				mIdx := i
+				if mIdx >= 64 {
+					mIdx = 63
+				}
+				dIdx := depth
+				if dIdx >= MaxDepth {
+					dIdx = MaxDepth - 1
+				}
+				reduction = lmrTable[dIdx][mIdx]
+				if reduction >= depth {
+					reduction = depth - 1
+				}
 			}
 
 			score = -w.alphaBeta(b, depth-1-reduction, -alpha-1, -alpha, ply+1, m)
@@ -412,7 +447,9 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 			if isQuiet && ply < MaxDepth {
 				w.KillerMoves[ply][1] = w.KillerMoves[ply][0]
 				w.KillerMoves[ply][0] = m
-				w.History[us][m.From()][m.To()] += depth * depth
+
+				bonus := depth * depth
+				applyHistoryBonus(&w.History[us][m.From()][m.To()], bonus, 10000)
 
 				if prevMove != move.NullMove {
 					w.CounterMoves[prevMove.From()][prevMove.To()] = m
