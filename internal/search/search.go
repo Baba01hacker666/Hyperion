@@ -243,6 +243,16 @@ func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move, 
 		return move.NullMove, 0
 	}
 
+	us := b.SideToMove
+	them := us.Opposite()
+	kingPos := board.Square((b.Colors[us] & b.Pieces[board.King]).LSB())
+	inCheck := attack.IsSquareAttacked(b, kingPos, them)
+
+	searchDepth := depth
+	if inCheck {
+		searchDepth++
+	}
+
 	ttMove := move.NullMove
 	if entry, ok := w.searcher.TT.Probe(b.Hash); ok {
 		ttMove = entry.Move
@@ -268,11 +278,11 @@ func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move, 
 
 		score := 0
 		if i == 0 {
-			score = -w.alphaBeta(b, depth-1, -beta, -alpha, 1, m)
+			score = -w.alphaBeta(b, searchDepth-1, -beta, -alpha, 1, m)
 		} else {
-			score = -w.alphaBeta(b, depth-1, -alpha-1, -alpha, 1, m)
+			score = -w.alphaBeta(b, searchDepth-1, -alpha-1, -alpha, 1, m)
 			if score > alpha && score < beta {
-				score = -w.alphaBeta(b, depth-1, -beta, -alpha, 1, m)
+				score = -w.alphaBeta(b, searchDepth-1, -beta, -alpha, 1, m)
 			}
 		}
 
@@ -374,7 +384,8 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 			oldEP := b.EnPassant
 			b.EnPassant = board.NoSquare
 
-			nullScore := -w.alphaBeta(b, depth-1-2, -beta, -beta+1, ply+1, move.NullMove)
+			R := 3 + depth/4
+			nullScore := -w.alphaBeta(b, depth-1-R, -beta, -beta+1, ply+1, move.NullMove)
 
 			b.SideToMove = us
 			b.EnPassant = oldEP
@@ -513,7 +524,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 	return bestScore
 }
 
-// Quiescence Search with SEE & Delta Pruning.
+// Quiescence Search with SEE, Delta Pruning, and Check Evasions.
 func (w *Worker) quiescence(b *board.Board, alpha, beta, ply int) int {
 	if w.searcher.Stopped.Load() {
 		return 0
@@ -522,24 +533,35 @@ func (w *Worker) quiescence(b *board.Board, alpha, beta, ply int) int {
 	w.nodes++
 	w.searcher.Nodes.Add(1)
 
-	standPat := evaluation.Evaluate(b)
+	us := b.SideToMove
+	them := us.Opposite()
+	kingPos := board.Square((b.Colors[us] & b.Pieces[board.King]).LSB())
+	inCheck := attack.IsSquareAttacked(b, kingPos, them)
 
-	if standPat >= beta {
-		return beta
-	}
-	if standPat > alpha {
-		alpha = standPat
+	if !inCheck {
+		standPat := evaluation.Evaluate(b)
+		if standPat >= beta {
+			return beta
+		}
+		if standPat > alpha {
+			alpha = standPat
+		}
 	}
 
 	if ply >= MaxDepth || ply >= 20 {
-		return standPat
+		return evaluation.Evaluate(b)
 	}
 
 	pseudo := &movegen.MoveList{}
-	movegen.GeneratePseudoLegalMoves(b, pseudo)
+	if inCheck {
+		movegen.GenerateLegalMoves(b, pseudo)
+		if pseudo.Count == 0 {
+			return -MateVal + ply
+		}
+	} else {
+		movegen.GeneratePseudoLegalMoves(b, pseudo)
+	}
 
-	us := b.SideToMove
-	them := us.Opposite()
 	var undo board.Undo
 
 	for i := 0; i < pseudo.Count; i++ {
@@ -548,20 +570,23 @@ func (w *Worker) quiescence(b *board.Board, alpha, beta, ply int) int {
 		}
 
 		m := pseudo.Moves[i]
-		if !m.IsCapture() {
-			continue
-		}
-
-		if !evaluation.SEE(b, m, 0) {
-			continue
+		if !inCheck {
+			if !m.IsCapture() {
+				continue
+			}
+			if !evaluation.SEE(b, m, 0) {
+				continue
+			}
 		}
 
 		b.MakeMove(m, &undo)
 
-		kingPos := board.Square((b.Colors[us] & b.Pieces[board.King]).LSB())
-		if attack.IsSquareAttacked(b, kingPos, them) {
-			b.UnmakeMove(&undo)
-			continue
+		if !inCheck {
+			kPos := board.Square((b.Colors[us] & b.Pieces[board.King]).LSB())
+			if attack.IsSquareAttacked(b, kPos, them) {
+				b.UnmakeMove(&undo)
+				continue
+			}
 		}
 
 		score := -w.quiescence(b, -beta, -alpha, ply+1)

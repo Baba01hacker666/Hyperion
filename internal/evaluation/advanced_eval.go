@@ -97,7 +97,7 @@ func evaluatePawns(b *board.Board, color board.Color) int {
 				r = 7 - int(rank)
 			}
 			// Passed pawn bonus scales quadratically with rank advance
-			score += (r * r * 5)
+			score += (r * r * 8)
 		}
 
 		// Doubled Pawn Penalty
@@ -196,13 +196,15 @@ func evaluateMobility(b *board.Board, color board.Color) int {
 
 func evaluateKingSafety(b *board.Board, color board.Color) int {
 	score := 0
+	opp := color.Opposite()
 	kingSq := board.Square((b.Colors[color] & b.Pieces[board.King]).LSB())
 	friendlyPawns := b.Pieces[board.Pawn] & b.Colors[color]
+	enemyHeavy := (b.Pieces[board.Queen] | b.Pieces[board.Rook]) & b.Colors[opp]
 
-	// Pawn shield around King
 	file := kingSq.File()
 	rank := kingSq.Rank()
 
+	// Pawn shield around King
 	if (color == board.White && rank <= 1) || (color == board.Black && rank >= 6) {
 		for f := max(0, int(file)-1); f <= min(7, int(file)+1); f++ {
 			shieldFile := bitboard.FileMasks[f]
@@ -212,6 +214,45 @@ func evaluateKingSafety(b *board.Board, color board.Color) int {
 				score -= 20 // Missing pawn shield penalty
 			}
 		}
+	} else if enemyHeavy != 0 {
+		// Exposed King in middle of board with enemy Queens/Rooks present
+		var exposedDist int
+		if color == board.White {
+			exposedDist = int(rank)
+		} else {
+			exposedDist = 7 - int(rank)
+		}
+		if exposedDist >= 2 {
+			score -= exposedDist * 30 // Heavy penalty for advancing king prematurely
+		}
+	}
+
+	// King Ring Pressure
+	kingZone := attack.KingAttacks[kingSq]
+	attackersCount := 0
+
+	for pType := board.Knight; pType <= board.Queen; pType++ {
+		enemyPieces := b.Pieces[pType] & b.Colors[opp]
+		for enemyPieces != 0 {
+			eSq := board.Square(enemyPieces.PopLSB())
+			var eAttacks bitboard.Bitboard
+			switch pType {
+			case board.Knight:
+				eAttacks = attack.KnightAttacks[eSq]
+			case board.Bishop:
+				eAttacks = magic.GetBishopAttacks(int(eSq), b.AllPieces())
+			case board.Rook:
+				eAttacks = magic.GetRookAttacks(int(eSq), b.AllPieces())
+			case board.Queen:
+				eAttacks = magic.GetQueenAttacks(int(eSq), b.AllPieces())
+			}
+			if (eAttacks & kingZone) != 0 {
+				attackersCount++
+			}
+		}
+	}
+	if attackersCount >= 2 {
+		score -= attackersCount * attackersCount * 8 // Aggressive king attack penalty
 	}
 
 	return score
