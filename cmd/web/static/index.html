@@ -396,6 +396,44 @@ $(document).ready(function() {
         log('📥 PGN game file exported successfully!');
     });
 
+    $('#btn-analyze-game').click(function() {
+        const moves = game.history({ verbose: true }).map(m => m.from + m.to + (m.promotion || '')).join(' ');
+        if (!moves || moves.trim() === '') {
+            alert('No moves played to analyze!');
+            return;
+        }
+
+        log('🔍 Running Stockfish Grandmaster Post-Game Analysis... Please wait...');
+
+        $.getJSON('/api/analyze?moves=' + encodeURIComponent(moves), function(data) {
+            let reportHtml = `
+                <div style="background: rgba(15, 23, 42, 0.95); border: 1px solid rgba(139, 92, 246, 0.4); border-radius: 12px; padding: 20px; margin-top: 15px; text-align: left;">
+                    <h3 style="color: #c084fc; margin-top: 0;">📊 Stockfish Analysis Report</h3>
+                    <div style="display: flex; gap: 15px; margin-bottom: 15px; flex-wrap: wrap;">
+                        <span style="background: #1e293b; padding: 8px 14px; border-radius: 8px; border: 1px solid #475569;">🎯 Accuracy: <strong>${data.accuracy}%</strong></span>
+                        <span style="background: #1e293b; padding: 8px 14px; border-radius: 8px; border: 1px solid #475569;">📉 Avg CP Loss: <strong>${data.avg_cp_loss} cp</strong></span>
+                        <span style="background: #1e293b; padding: 8px 14px; border-radius: 8px; border: 1px solid #ef4444;">🔴 Blunders: <strong>${data.blunders}</strong></span>
+                        <span style="background: #1e293b; padding: 8px 14px; border-radius: 8px; border: 1px solid #f97316;">🟠 Mistakes: <strong>${data.mistakes}</strong></span>
+                        <span style="background: #1e293b; padding: 8px 14px; border-radius: 8px; border: 1px solid #eab308;">🟡 Inaccuracies: <strong>${data.inaccuracies}</strong></span>
+                    </div>
+                    <div style="max-height: 250px; overflow-y: auto; background: #090d16; border-radius: 8px; padding: 10px; font-family: monospace; font-size: 13px;">
+            `;
+
+            data.details.forEach(item => {
+                reportHtml += `<div style="padding: 4px 0; border-bottom: 1px solid #1e293b;">
+                    Move ${item.move_num} (${item.color}): Played <strong>${item.played}</strong> | Best: <strong>${item.best}</strong> | Eval: ${item.eval} cp | Loss: ${item.cp_loss} cp [${item.classification}]
+                </div>`;
+            });
+
+            reportHtml += `</div></div>`;
+
+            $('#analysis-output').html(reportHtml);
+            log('✅ Stockfish analysis complete!');
+        }).fail(function() {
+            alert('Failed to execute Stockfish analysis!');
+        });
+    });
+
     // Initialize Chessboard with official Wikipedia pieces CDN
     board = Chessboard('chessboard', {
         draggable: true,
