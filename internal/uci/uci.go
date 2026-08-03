@@ -15,6 +15,7 @@ import (
 )
 
 var hashSizeMB = 64
+var numThreads = 1
 
 // Loop starts the UCI protocol listening loop.
 func Loop() {
@@ -39,9 +40,10 @@ func Loop() {
 		switch cmd {
 		case "uci":
 			fmt.Println("id name Hyperion")
-			fmt.Println("id author Antigravity")
+			fmt.Println("id author BABA01HACKER")
 			fmt.Println("option name Style type combo default normal var normal var gamble var defense var evil")
 			fmt.Println("option name Hash type spin default 64 min 1 max 1024")
+			fmt.Println("option name Threads type spin default 1 min 1 max 128")
 			fmt.Println("uciok")
 		case "isready":
 			fmt.Println("readyok")
@@ -86,6 +88,10 @@ func parseSetOption(args []string) {
 	} else if name == "hash" {
 		if sz, err := strconv.Atoi(value); err == nil && sz >= 1 {
 			hashSizeMB = sz
+		}
+	} else if name == "threads" {
+		if t, err := strconv.Atoi(value); err == nil && t >= 1 {
+			numThreads = t
 		}
 	}
 }
@@ -156,8 +162,9 @@ func parseGo(b *board.Board, args []string) {
 	}
 
 	searcher := search.NewSearcher(hashSizeMB)
+	searcher.Threads = numThreads
 	bestMove, score := searcher.Search(b, depth)
 
-	fmt.Printf("info depth %d score cp %d nodes %d\n", depth, score, searcher.Nodes)
+	fmt.Printf("info depth %d score cp %d nodes %d\n", depth, score, searcher.Nodes.Load())
 	fmt.Printf("bestmove %s\n", bestMove.String())
 }

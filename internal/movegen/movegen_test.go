@@ -5,25 +5,6 @@ import (
 	"testing"
 )
 
-func perft(b *board.Board, depth int) uint64 {
-	if depth == 0 {
-		return 1
-	}
-
-	var nodes uint64 = 0
-	list := &MoveList{}
-	GenerateLegalMoves(b, list)
-
-	var undo board.Undo
-	for i := 0; i < list.Count; i++ {
-		m := list.Moves[i]
-		b.MakeMove(m, &undo)
-		nodes += perft(b, depth-1)
-		b.UnmakeMove(&undo)
-	}
-	return nodes
-}
-
 func TestPerftStartPos(t *testing.T) {
 	b := board.New()
 	b.SetFEN(board.StartFEN)
@@ -36,10 +17,15 @@ func TestPerftStartPos(t *testing.T) {
 		197281, // Depth 4
 	}
 
-	for depth := 1; depth <= 3; depth++ { // Testing up to depth 3 for speed
-		nodes := perft(b, depth)
+	for depth := 1; depth <= 3; depth++ {
+		nodes := Perft(b, depth)
 		if nodes != expected[depth] {
 			t.Errorf("Perft Depth %d Failed. Expected: %d, Got: %d", depth, expected[depth], nodes)
+		}
+
+		pNodes := PerftParallel(b, depth, 4)
+		if pNodes != expected[depth] {
+			t.Errorf("Parallel Perft Depth %d Failed. Expected: %d, Got: %d", depth, expected[depth], pNodes)
 		}
 	}
 }
@@ -55,10 +41,15 @@ func TestPerftKiwipete(t *testing.T) {
 		97862, // Depth 3
 	}
 
-	for depth := 1; depth <= 2; depth++ { // Testing up to depth 2 for speed
-		nodes := perft(b, depth)
+	for depth := 1; depth <= 2; depth++ {
+		nodes := Perft(b, depth)
 		if nodes != expected[depth] {
 			t.Errorf("Kiwipete Perft Depth %d Failed. Expected: %d, Got: %d", depth, expected[depth], nodes)
+		}
+
+		pNodes := PerftParallel(b, depth, 4)
+		if pNodes != expected[depth] {
+			t.Errorf("Kiwipete Parallel Perft Depth %d Failed. Expected: %d, Got: %d", depth, expected[depth], pNodes)
 		}
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"hyperion/internal/movegen"
 	"hyperion/internal/tt"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,27 +19,37 @@ const (
 	MaxDepth = 64
 )
 
-// Searcher holds state for search.
+// Searcher holds shared state for multi-threaded Lazy SMP search.
 type Searcher struct {
-	Nodes       uint64
-	TT          *tt.Table
+	Threads   int
+	TT        *tt.Table
+	StartTime time.Time
+	MaxTime   time.Duration
+	Stopped   atomic.Bool
+	Nodes     atomic.Uint64
+}
+
+// Worker holds per-thread state to avoid data races.
+type Worker struct {
+	id          int
+	searcher    *Searcher
+	board       *board.Board
+	nodes       uint64
 	KillerMoves [MaxDepth][2]move.Move
 	History     [2][64][64]int
-	StartTime   time.Time
-	MaxTime     time.Duration
 }
 
 func NewSearcher(ttSizeMB int) *Searcher {
 	return &Searcher{
-		TT: tt.NewTable(ttSizeMB),
+		TT:      tt.NewTable(ttSizeMB),
+		Threads: 1,
 	}
 }
 
-// Search performs Iterative Deepening with Aspiration Windows up to maxDepth.
+// Search performs multi-threaded Iterative Deepening with Aspiration Windows.
 func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
-	s.Nodes = 0
-	var overallBestMove move.Move
-	var overallBestScore int
+	s.Nodes.Store(0)
+	s.Stopped.Store(false)
 
 	s.StartTime = time.Now()
 	s.MaxTime = 4000 * time.Millisecond
@@ -45,13 +57,59 @@ func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
 		s.MaxTime = 12000 * time.Millisecond // Evil Mode: 12 seconds per move!
 	}
 
+	numThreads := s.Threads
+	if numThreads < 1 {
+		numThreads = 1
+	}
+
+	mainWorker := &Worker{
+		id:       0,
+		searcher: s,
+		board:    b.Clone(),
+	}
+
+	var wg sync.WaitGroup
+
+	// Spawn helper worker threads for Lazy SMP
+	for i := 1; i < numThreads; i++ {
+		wg.Add(1)
+		helperWorker := &Worker{
+			id:       i,
+			searcher: s,
+			board:    b.Clone(),
+		}
+		go func(w *Worker) {
+			defer wg.Done()
+			w.runHelperSearch(maxDepth)
+		}(helperWorker)
+	}
+
+	// Main worker drives search and returns best move and score
+	bestMove, bestScore := mainWorker.runMainSearch(maxDepth)
+
+	// Signal helper threads to stop and wait for completion
+	s.Stopped.Store(true)
+	wg.Wait()
+
+	return bestMove, bestScore
+}
+
+func (w *Worker) runMainSearch(maxDepth int) (move.Move, int) {
+	var overallBestMove move.Move
+	var overallBestScore int
+
 	alpha := -Infinity
 	beta := Infinity
 
 	for depth := 1; depth <= maxDepth; depth++ {
-		if depth > 1 && time.Since(s.StartTime) > s.MaxTime {
+		if w.searcher.Stopped.Load() {
 			break
 		}
+		if depth > 1 && time.Since(w.searcher.StartTime) > w.searcher.MaxTime {
+			w.searcher.Stopped.Store(true)
+			break
+		}
+
 		window := 50
 		if depth >= 4 {
 			alpha = overallBestScore - window
@@ -63,8 +121,12 @@ func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
 
 		researches := 0
 		for {
-			bestMove, score := s.searchRoot(b, depth, alpha, beta)
-			if bestMove != move.NullMove {
+			if w.searcher.Stopped.Load() {
+				break
+			}
+
+			bestMove, score := w.searchRoot(w.board, depth, alpha, beta)
+			if bestMove != move.NullMove && !w.searcher.Stopped.Load() {
 				overallBestMove = bestMove
 				overallBestScore = score
 			}
@@ -83,8 +145,8 @@ func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
 			if researches >= 2 {
 				alpha = -Infinity
 				beta = Infinity
-				bestMove, score = s.searchRoot(b, depth, alpha, beta)
-				if bestMove != move.NullMove {
+				bestMove, score = w.searchRoot(w.board, depth, alpha, beta)
+				if bestMove != move.NullMove && !w.searcher.Stopped.Load() {
 					overallBestMove = bestMove
 					overallBestScore = score
 				}
@@ -96,7 +158,26 @@ func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
 	return overallBestMove, overallBestScore
 }
 
-func (s *Searcher) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move, int) {
+func (w *Worker) runHelperSearch(maxDepth int) {
+	targetDepth := maxDepth
+	if targetDepth < MaxDepth {
+		targetDepth = maxDepth + 2
+	}
+
+	for depth := 1; depth <= targetDepth; depth++ {
+		if w.searcher.Stopped.Load() {
+			break
+		}
+		if time.Since(w.searcher.StartTime) > w.searcher.MaxTime {
+			break
+		}
+
+		// Helper thread searches root to populate shared Transposition Table (TT)
+		w.searchRoot(w.board, depth, -Infinity, Infinity)
+	}
+}
+
+func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move, int) {
 	list := &movegen.MoveList{}
 	movegen.GenerateLegalMoves(b, list)
 
@@ -105,11 +186,11 @@ func (s *Searcher) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move
 	}
 
 	ttMove := move.NullMove
-	if entry, ok := s.TT.Probe(b.Hash); ok {
+	if entry, ok := w.searcher.TT.Probe(b.Hash); ok {
 		ttMove = entry.Move
 	}
 
-	s.orderMoves(b, list, ttMove, 0)
+	w.orderMoves(b, list, ttMove, 0)
 
 	bestMove := list.Moves[0]
 	bestScore := -Infinity
@@ -117,7 +198,11 @@ func (s *Searcher) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move
 	var undo board.Undo
 
 	for i := 0; i < list.Count; i++ {
-		if i > 0 && time.Since(s.StartTime) > s.MaxTime {
+		if w.searcher.Stopped.Load() {
+			break
+		}
+		if i > 0 && time.Since(w.searcher.StartTime) > w.searcher.MaxTime {
+			w.searcher.Stopped.Store(true)
 			break
 		}
 		m := list.Moves[i]
@@ -125,15 +210,19 @@ func (s *Searcher) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move
 
 		score := 0
 		if i == 0 {
-			score = -s.alphaBeta(b, depth-1, -beta, -alpha, 1)
+			score = -w.alphaBeta(b, depth-1, -beta, -alpha, 1)
 		} else {
-			score = -s.alphaBeta(b, depth-1, -alpha-1, -alpha, 1)
+			score = -w.alphaBeta(b, depth-1, -alpha-1, -alpha, 1)
 			if score > alpha && score < beta {
-				score = -s.alphaBeta(b, depth-1, -beta, -alpha, 1)
+				score = -w.alphaBeta(b, depth-1, -beta, -alpha, 1)
 			}
 		}
 
 		b.UnmakeMove(&undo)
+
+		if w.searcher.Stopped.Load() {
+			break
+		}
 
 		if score > bestScore {
 			bestScore = score
@@ -145,17 +234,29 @@ func (s *Searcher) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move
 		}
 	}
 
-	s.TT.Store(b.Hash, depth, tt.Exact, bestScore, bestMove)
+	if !w.searcher.Stopped.Load() {
+		w.searcher.TT.Store(b.Hash, depth, tt.Exact, bestScore, bestMove)
+	}
 	return bestMove, bestScore
 }
 
 // Principal Variation Search (PVS) with Alpha-Beta Pruning.
-func (s *Searcher) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
-	if depth <= 0 {
-		return s.quiescence(b, alpha, beta, ply)
+func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
+	if w.searcher.Stopped.Load() {
+		return 0
 	}
 
-	s.Nodes++
+	w.nodes++
+	w.searcher.Nodes.Add(1)
+
+	if w.nodes%2048 == 0 && time.Since(w.searcher.StartTime) > w.searcher.MaxTime {
+		w.searcher.Stopped.Store(true)
+		return 0
+	}
+
+	if depth <= 0 {
+		return w.quiescence(b, alpha, beta, ply)
+	}
 
 	us := b.SideToMove
 	them := us.Opposite()
@@ -168,7 +269,7 @@ func (s *Searcher) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 
 	// 1. Transposition Table Lookup
 	ttMove := move.NullMove
-	if entry, ok := s.TT.Probe(b.Hash); ok && int(entry.Depth) >= depth {
+	if entry, ok := w.searcher.TT.Probe(b.Hash); ok && int(entry.Depth) >= depth {
 		if entry.Flag == tt.Exact {
 			return int(entry.Score)
 		} else if entry.Flag == tt.LowerBound && int(entry.Score) >= beta {
@@ -187,10 +288,14 @@ func (s *Searcher) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 			oldEP := b.EnPassant
 			b.EnPassant = board.NoSquare
 
-			nullScore := -s.alphaBeta(b, depth-1-2, -beta, -beta+1, ply+1)
+			nullScore := -w.alphaBeta(b, depth-1-2, -beta, -beta+1, ply+1)
 
 			b.SideToMove = us
 			b.EnPassant = oldEP
+
+			if w.searcher.Stopped.Load() {
+				return 0
+			}
 
 			if nullScore >= beta {
 				return beta
@@ -208,7 +313,7 @@ func (s *Searcher) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 		return 0
 	}
 
-	s.orderMoves(b, list, ttMove, ply)
+	w.orderMoves(b, list, ttMove, ply)
 
 	bestMove := move.NullMove
 	bestScore := -Infinity
@@ -217,6 +322,10 @@ func (s *Searcher) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 	var undo board.Undo
 
 	for i := 0; i < list.Count; i++ {
+		if w.searcher.Stopped.Load() {
+			return 0
+		}
+
 		m := list.Moves[i]
 		isQuiet := !m.IsCapture() && !m.IsPromotion()
 
@@ -224,30 +333,34 @@ func (s *Searcher) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 
 		score := 0
 		if i == 0 {
-			score = -s.alphaBeta(b, depth-1, -beta, -alpha, ply+1)
+			score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1)
 		} else {
 			reduction := 0
 			if i >= 3 && depth >= 3 && isQuiet && !inCheck {
 				reduction = 1
 			}
 
-			score = -s.alphaBeta(b, depth-1-reduction, -alpha-1, -alpha, ply+1)
+			score = -w.alphaBeta(b, depth-1-reduction, -alpha-1, -alpha, ply+1)
 
 			if score > alpha && score < beta {
-				score = -s.alphaBeta(b, depth-1, -beta, -alpha, ply+1)
+				score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1)
 			}
 		}
 
 		b.UnmakeMove(&undo)
 
+		if w.searcher.Stopped.Load() {
+			return 0
+		}
+
 		if score >= beta {
 			if isQuiet && ply < MaxDepth {
-				s.KillerMoves[ply][1] = s.KillerMoves[ply][0]
-				s.KillerMoves[ply][0] = m
-				s.History[us][m.From()][m.To()] += depth * depth
+				w.KillerMoves[ply][1] = w.KillerMoves[ply][0]
+				w.KillerMoves[ply][0] = m
+				w.History[us][m.From()][m.To()] += depth * depth
 			}
 
-			s.TT.Store(b.Hash, depth, tt.LowerBound, beta, m)
+			w.searcher.TT.Store(b.Hash, depth, tt.LowerBound, beta, m)
 			return beta
 		}
 
@@ -261,18 +374,26 @@ func (s *Searcher) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 		}
 	}
 
-	flag := tt.Exact
-	if bestScore <= origAlpha {
-		flag = tt.UpperBound
+	if !w.searcher.Stopped.Load() {
+		flag := tt.Exact
+		if bestScore <= origAlpha {
+			flag = tt.UpperBound
+		}
+		w.searcher.TT.Store(b.Hash, depth, flag, bestScore, bestMove)
 	}
-	s.TT.Store(b.Hash, depth, flag, bestScore, bestMove)
 
 	return bestScore
 }
 
-// Quiescence Search with SEE (Static Exchange Evaluation) & Delta Pruning.
-func (s *Searcher) quiescence(b *board.Board, alpha, beta, ply int) int {
-	s.Nodes++
+// Quiescence Search with SEE & Delta Pruning.
+func (w *Worker) quiescence(b *board.Board, alpha, beta, ply int) int {
+	if w.searcher.Stopped.Load() {
+		return 0
+	}
+
+	w.nodes++
+	w.searcher.Nodes.Add(1)
+
 	standPat := evaluation.Evaluate(b)
 
 	if standPat >= beta {
@@ -294,12 +415,15 @@ func (s *Searcher) quiescence(b *board.Board, alpha, beta, ply int) int {
 	var undo board.Undo
 
 	for i := 0; i < pseudo.Count; i++ {
+		if w.searcher.Stopped.Load() {
+			return 0
+		}
+
 		m := pseudo.Moves[i]
 		if !m.IsCapture() {
 			continue
 		}
 
-		// Static Exchange Evaluation (SEE): Prune losing captures
 		if !evaluation.SEE(b, m, 0) {
 			continue
 		}
@@ -312,8 +436,12 @@ func (s *Searcher) quiescence(b *board.Board, alpha, beta, ply int) int {
 			continue
 		}
 
-		score := -s.quiescence(b, -beta, -alpha, ply+1)
+		score := -w.quiescence(b, -beta, -alpha, ply+1)
 		b.UnmakeMove(&undo)
+
+		if w.searcher.Stopped.Load() {
+			return 0
+		}
 
 		if score >= beta {
 			return beta
@@ -331,7 +459,7 @@ type scoredMove struct {
 	score int
 }
 
-func (s *Searcher) orderMoves(b *board.Board, list *movegen.MoveList, ttMove move.Move, ply int) {
+func (w *Worker) orderMoves(b *board.Board, list *movegen.MoveList, ttMove move.Move, ply int) {
 	us := b.SideToMove
 	scored := make([]scoredMove, list.Count)
 
@@ -347,7 +475,6 @@ func (s *Searcher) orderMoves(b *board.Board, list *movegen.MoveList, ttMove mov
 			attackerSq := board.Square(m.From())
 			attacker := b.PieceAt(attackerSq).Type()
 
-			// Check Static Exchange Evaluation (SEE)
 			if evaluation.SEE(b, m, 0) {
 				score = 10000 + (int(victim)*100 - int(attacker))
 			} else {
@@ -355,12 +482,12 @@ func (s *Searcher) orderMoves(b *board.Board, list *movegen.MoveList, ttMove mov
 			}
 		} else {
 			if ply < MaxDepth {
-				if m == s.KillerMoves[ply][0] {
+				if m == w.KillerMoves[ply][0] {
 					score = 9000
-				} else if m == s.KillerMoves[ply][1] {
+				} else if m == w.KillerMoves[ply][1] {
 					score = 8000
 				} else {
-					score = s.History[us][m.From()][m.To()]
+					score = w.History[us][m.From()][m.To()]
 				}
 			}
 		}

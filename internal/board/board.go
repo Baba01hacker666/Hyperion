@@ -74,3 +74,9 @@ func (b *Board) PieceAt(sq Square) Piece {
 func (b *Board) AllPieces() bitboard.Bitboard {
 	return b.Colors[White] | b.Colors[Black]
 }
+
+// Clone creates a deep copy of the board state.
+func (b *Board) Clone() *Board {
+	cb := *b
+	return &cb
+}
