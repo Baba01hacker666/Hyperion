@@ -1,6 +1,7 @@
 package search
 
 import (
+	"fmt"
 	"hyperion/internal/attack"
 	"hyperion/internal/board"
 	"hyperion/internal/evaluation"
@@ -218,6 +219,17 @@ func (w *Worker) runMainSearch(maxDepth int) (move.Move, int) {
 				break
 			}
 		}
+
+		if !w.searcher.Stopped.Load() {
+			elapsed := time.Since(w.searcher.StartTime).Milliseconds()
+			nodes := w.searcher.Nodes.Load()
+			var nps int64
+			if elapsed > 0 {
+				nps = int64(nodes) * 1000 / elapsed
+			}
+			fmt.Printf("info depth %d score cp %d time %d nodes %d nps %d pv %s\n",
+				depth, overallBestScore, elapsed, nodes, nps, overallBestMove.String())
+		}
 	}
 
 	return overallBestMove, overallBestScore
@@ -380,8 +392,8 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 
 	// Internal Iterative Deepening (IID): if no TT move and depth is large,
 	// do a shallow search to find a good move to try first.
-	if ttMove == move.NullMove && depth >= 5 && !inCheck {
-		w.alphaBeta(b, depth-4, alpha, beta, ply, prevMove)
+	if ttMove == move.NullMove && depth >= 6 && !inCheck {
+		w.alphaBeta(b, depth-3, alpha, beta, ply, prevMove)
 		if entry, ok := w.searcher.TT.Probe(b.Hash); ok {
 			ttMove = entry.Move
 		}

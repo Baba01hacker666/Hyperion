@@ -205,8 +205,7 @@ func parseGo(b *board.Board, args []string) {
 
 	searcher := search.NewSearcher(hashSizeMB)
 	searcher.Threads = numThreads
-	bestMove, score := searcher.SearchWithLimits(b, limits)
+	bestMove, _ := searcher.SearchWithLimits(b, limits)
 
-	fmt.Printf("info depth %d score cp %d nodes %d\n", limits.Depth, score, searcher.Nodes.Load())
 	fmt.Printf("bestmove %s\n", bestMove.String())
 }
