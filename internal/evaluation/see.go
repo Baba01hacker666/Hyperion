@@ -29,47 +29,34 @@ func SEE(b *board.Board, m move.Move, threshold int) bool {
 		victimVal = seeValues[board.Pawn]
 	}
 
-	// Early cutoff if initial gain is already below threshold
-	if victimVal-seeValues[attackerPiece.Type()] >= threshold {
-		return true
-	}
-
-	// Swap list array
 	var gain [32]int
 	gain[0] = victimVal
+	gain[1] = seeValues[attackerPiece.Type()]
 
 	occ := b.AllPieces()
 	occ.Clear(int(from))
 
-	// Initial attacker
-	currentAttackerVal := seeValues[attackerPiece.Type()]
 	side := b.SideToMove.Opposite()
 	depth := 1
 
 	for {
-		// Find least valuable attacker for current side
 		attackerSq, attackerType, found := getLeastValuableAttacker(b, to, side, occ)
 		if !found {
 			break
 		}
 
-		gain[depth] = currentAttackerVal - gain[depth-1]
-		if max(-gain[depth], gain[depth-1]) < threshold {
-			break
-		}
-
-		currentAttackerVal = seeValues[attackerType]
+		depth++
+		gain[depth] = seeValues[attackerType]
 		occ.Clear(int(attackerSq))
 		side = side.Opposite()
-		depth++
 	}
 
-	// Minimax back up the swap list
-	for depth--; depth > 0; depth-- {
-		gain[depth-1] = -max(-gain[depth], -gain[depth-1])
+	for d := depth; d > 1; d-- {
+		gain[d-1] = max(0, gain[d-1]-gain[d])
 	}
 
-	return gain[0] >= threshold
+	netScore := gain[0] - gain[1]
+	return netScore >= threshold
 }
 
 func getLeastValuableAttacker(b *board.Board, to board.Square, side board.Color, occ bitboard.Bitboard) (board.Square, board.PieceType, bool) {

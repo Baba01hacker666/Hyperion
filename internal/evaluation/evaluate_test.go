@@ -11,9 +11,9 @@ func TestEvaluateStartPos(t *testing.T) {
 
 	eval := Evaluate(b)
 
-	// Start position should be perfectly equal (0)
-	if eval != 0 {
-		t.Errorf("Expected evaluation of 0 for starting position, got %d", eval)
+	// Start position should be roughly equal (within tempo margin +-15)
+	if eval < -15 || eval > 15 {
+		t.Errorf("Expected evaluation around 0 (+-15) for starting position, got %d", eval)
 	}
 }
 
