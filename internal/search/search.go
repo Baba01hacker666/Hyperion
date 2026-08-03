@@ -346,7 +346,18 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		ttMove = entry.Move
 	}
 
-	// 2. Reverse Futility Pruning (RFP / Static Null Move Pruning)
+	// 2. Razoring
+	if depth <= 3 && !inCheck && ply > 0 {
+		eval := evaluation.Evaluate(b)
+		if eval < alpha-300-150*depth {
+			qScore := w.quiescence(b, alpha, beta, ply)
+			if qScore < alpha {
+				return qScore
+			}
+		}
+	}
+
+	// 3. Reverse Futility Pruning (RFP / Static Null Move Pruning)
 	if depth <= 4 && !inCheck && ply > 0 {
 		margin := 120 * depth
 		eval := evaluation.Evaluate(b)
@@ -355,7 +366,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		}
 	}
 
-	// 3. Null-Move Pruning (NMP)
+	// 4. Null-Move Pruning (NMP)
 	if depth >= 3 && !inCheck && ply > 0 {
 		nonPawnPieces := b.Colors[us] &^ b.Pieces[board.Pawn] &^ b.Pieces[board.King]
 		if nonPawnPieces != 0 {
@@ -378,7 +389,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		}
 	}
 
-	// 4. Futility Pruning Flag at frontier nodes (depth == 1)
+	// 5. Futility Pruning Flag at frontier nodes (depth == 1)
 	futilityPruning := false
 	if depth == 1 && !inCheck && ply > 0 {
 		eval := evaluation.Evaluate(b)
@@ -404,6 +415,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 	origAlpha := alpha
 
 	var undo board.Undo
+	quietCount := 0
 
 	for i := 0; i < list.Count; i++ {
 		if w.searcher.Stopped.Load() {
@@ -413,9 +425,19 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		m := list.Moves[i]
 		isQuiet := !m.IsCapture() && !m.IsPromotion()
 
-		// Skip quiet moves if futility pruning condition holds
-		if futilityPruning && i > 0 && isQuiet {
-			continue
+		if isQuiet {
+			quietCount++
+
+			// Late Move Pruning (LMP)
+			maxQuiets := 3 + depth*depth
+			if depth <= 4 && !inCheck && ply > 0 && quietCount > maxQuiets {
+				continue
+			}
+
+			// Skip quiet moves if futility pruning condition holds
+			if futilityPruning && i > 0 {
+				continue
+			}
 		}
 
 		b.MakeMove(m, &undo)
