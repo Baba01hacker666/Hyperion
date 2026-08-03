@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var hashSizeMB = 64
@@ -151,20 +152,59 @@ func parseGo(b *board.Board, args []string) {
 		return
 	}
 
-	depth := 8 // Default search depth 8 for 2000+ Elo strength
+	var limits search.Limits
 
 	for i := 0; i < len(args); i++ {
-		if args[i] == "depth" && i+1 < len(args) {
-			if d, err := strconv.Atoi(args[i+1]); err == nil {
-				depth = d
+		switch args[i] {
+		case "depth":
+			if i+1 < len(args) {
+				if d, err := strconv.Atoi(args[i+1]); err == nil {
+					limits.Depth = d
+				}
+			}
+		case "wtime":
+			if i+1 < len(args) && b.SideToMove == board.White {
+				if t, err := strconv.Atoi(args[i+1]); err == nil {
+					limits.Time = time.Duration(t) * time.Millisecond
+				}
+			}
+		case "btime":
+			if i+1 < len(args) && b.SideToMove == board.Black {
+				if t, err := strconv.Atoi(args[i+1]); err == nil {
+					limits.Time = time.Duration(t) * time.Millisecond
+				}
+			}
+		case "winc":
+			if i+1 < len(args) && b.SideToMove == board.White {
+				if inc, err := strconv.Atoi(args[i+1]); err == nil {
+					limits.Inc = time.Duration(inc) * time.Millisecond
+				}
+			}
+		case "binc":
+			if i+1 < len(args) && b.SideToMove == board.Black {
+				if inc, err := strconv.Atoi(args[i+1]); err == nil {
+					limits.Inc = time.Duration(inc) * time.Millisecond
+				}
+			}
+		case "movestogo":
+			if i+1 < len(args) {
+				if mtg, err := strconv.Atoi(args[i+1]); err == nil {
+					limits.MovesToGo = mtg
+				}
+			}
+		case "movetime":
+			if i+1 < len(args) {
+				if mt, err := strconv.Atoi(args[i+1]); err == nil {
+					limits.MoveTime = time.Duration(mt) * time.Millisecond
+				}
 			}
 		}
 	}
 
 	searcher := search.NewSearcher(hashSizeMB)
 	searcher.Threads = numThreads
-	bestMove, score := searcher.Search(b, depth)
+	bestMove, score := searcher.SearchWithLimits(b, limits)
 
-	fmt.Printf("info depth %d score cp %d nodes %d\n", depth, score, searcher.Nodes.Load())
+	fmt.Printf("info depth %d score cp %d nodes %d\n", limits.Depth, score, searcher.Nodes.Load())
 	fmt.Printf("bestmove %s\n", bestMove.String())
 }

@@ -7,18 +7,72 @@ import (
 	"hyperion/internal/magic"
 )
 
-// EvaluatePositional Terms adds pawn structure, king safety, and piece mobility bonuses.
+// EvaluatePositional Terms adds pawn structure, king safety, piece mobility, bishop pair, and outpost bonuses.
 func EvaluatePositional(b *board.Board) int {
 	score := 0
 
 	// 1. Pawn Structure & Passed Pawns
 	score += evaluatePawns(b, board.White) - evaluatePawns(b, board.Black)
 
-	// 2. Piece Mobility & Outposts
+	// 2. Piece Mobility
 	score += evaluateMobility(b, board.White) - evaluateMobility(b, board.Black)
 
 	// 3. King Safety & Pawn Shields
 	score += evaluateKingSafety(b, board.White) - evaluateKingSafety(b, board.Black)
+
+	// 4. Bishop Pair Bonus
+	whiteBishops := (b.Pieces[board.Bishop] & b.Colors[board.White]).PopCount()
+	blackBishops := (b.Pieces[board.Bishop] & b.Colors[board.Black]).PopCount()
+	if whiteBishops >= 2 {
+		score += 35
+	}
+	if blackBishops >= 2 {
+		score -= 35
+	}
+
+	// 5. Knight Outposts
+	score += evaluateKnights(b, board.White) - evaluateKnights(b, board.Black)
+
+	return score
+}
+
+func evaluateKnights(b *board.Board, color board.Color) int {
+	score := 0
+	knights := b.Pieces[board.Knight] & b.Colors[color]
+	friendlyPawns := b.Pieces[board.Pawn] & b.Colors[color]
+	enemyPawns := b.Pieces[board.Pawn] & b.Colors[color.Opposite()]
+
+	for knights != 0 {
+		sq := board.Square(knights.PopLSB())
+		rank := sq.Rank()
+		file := sq.File()
+
+		// Outpost condition: Knight on ranks 4, 5, or 6
+		isOutpostRank := false
+		if color == board.White && rank >= 3 && rank <= 5 {
+			isOutpostRank = true
+		} else if color == board.Black && rank >= 2 && rank <= 4 {
+			isOutpostRank = true
+		}
+
+		if isOutpostRank {
+			// Protected by friendly pawn
+			pawnAttacks := attack.PawnAttacks[color.Opposite()][sq]
+			if (pawnAttacks & friendlyPawns) != 0 {
+				// No enemy pawn can attack this square from adjacent files
+				adjFiles := bitboard.Bitboard(0)
+				if file > 0 {
+					adjFiles |= bitboard.FileMasks[file-1]
+				}
+				if file < 7 {
+					adjFiles |= bitboard.FileMasks[file+1]
+				}
+				if (enemyPawns & adjFiles) == 0 {
+					score += 25 // Strong Knight Outpost!
+				}
+			}
+		}
+	}
 
 	return score
 }

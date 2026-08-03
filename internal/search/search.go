@@ -19,6 +19,15 @@ const (
 	MaxDepth = 64
 )
 
+type Limits struct {
+	Depth     int
+	Nodes     uint64
+	MoveTime  time.Duration
+	Time      time.Duration
+	Inc       time.Duration
+	MovesToGo int
+}
+
 // Searcher holds shared state for multi-threaded Lazy SMP search.
 type Searcher struct {
 	Threads   int
@@ -31,12 +40,13 @@ type Searcher struct {
 
 // Worker holds per-thread state to avoid data races.
 type Worker struct {
-	id          int
-	searcher    *Searcher
-	board       *board.Board
-	nodes       uint64
-	KillerMoves [MaxDepth][2]move.Move
-	History     [2][64][64]int
+	id           int
+	searcher     *Searcher
+	board        *board.Board
+	nodes        uint64
+	KillerMoves  [MaxDepth][2]move.Move
+	History      [2][64][64]int
+	CounterMoves [64][64]move.Move
 }
 
 func NewSearcher(ttSizeMB int) *Searcher {
@@ -48,13 +58,36 @@ func NewSearcher(ttSizeMB int) *Searcher {
 
 // Search performs multi-threaded Iterative Deepening with Aspiration Windows.
 func (s *Searcher) Search(b *board.Board, maxDepth int) (move.Move, int) {
+	return s.SearchWithLimits(b, Limits{Depth: maxDepth})
+}
+
+// SearchWithLimits handles dynamic time allocation and search bounds.
+func (s *Searcher) SearchWithLimits(b *board.Board, limits Limits) (move.Move, int) {
 	s.Nodes.Store(0)
 	s.Stopped.Store(false)
-
 	s.StartTime = time.Now()
-	s.MaxTime = 4000 * time.Millisecond
-	if evaluation.CurrentStyle == evaluation.StyleEvil {
-		s.MaxTime = 12000 * time.Millisecond // Evil Mode: 12 seconds per move!
+
+	if limits.MoveTime > 0 {
+		s.MaxTime = limits.MoveTime
+	} else if limits.Time > 0 {
+		movesToGo := limits.MovesToGo
+		if movesToGo <= 0 {
+			movesToGo = 30
+		}
+		s.MaxTime = (limits.Time / time.Duration(movesToGo)) + (limits.Inc * 3 / 4)
+		if s.MaxTime < 50*time.Millisecond {
+			s.MaxTime = 50 * time.Millisecond
+		}
+	} else {
+		s.MaxTime = 4000 * time.Millisecond
+		if evaluation.CurrentStyle == evaluation.StyleEvil {
+			s.MaxTime = 12000 * time.Millisecond
+		}
+	}
+
+	maxDepth := limits.Depth
+	if maxDepth <= 0 {
+		maxDepth = MaxDepth
 	}
 
 	numThreads := s.Threads
@@ -172,7 +205,6 @@ func (w *Worker) runHelperSearch(maxDepth int) {
 			break
 		}
 
-		// Helper thread searches root to populate shared Transposition Table (TT)
 		w.searchRoot(w.board, depth, -Infinity, Infinity)
 	}
 }
@@ -190,7 +222,7 @@ func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move, 
 		ttMove = entry.Move
 	}
 
-	w.orderMoves(b, list, ttMove, 0)
+	w.orderMoves(b, list, ttMove, 0, move.NullMove)
 
 	bestMove := list.Moves[0]
 	bestScore := -Infinity
@@ -210,11 +242,11 @@ func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move, 
 
 		score := 0
 		if i == 0 {
-			score = -w.alphaBeta(b, depth-1, -beta, -alpha, 1)
+			score = -w.alphaBeta(b, depth-1, -beta, -alpha, 1, m)
 		} else {
-			score = -w.alphaBeta(b, depth-1, -alpha-1, -alpha, 1)
+			score = -w.alphaBeta(b, depth-1, -alpha-1, -alpha, 1, m)
 			if score > alpha && score < beta {
-				score = -w.alphaBeta(b, depth-1, -beta, -alpha, 1)
+				score = -w.alphaBeta(b, depth-1, -beta, -alpha, 1, m)
 			}
 		}
 
@@ -241,7 +273,7 @@ func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move, 
 }
 
 // Principal Variation Search (PVS) with Alpha-Beta Pruning.
-func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
+func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove move.Move) int {
 	if w.searcher.Stopped.Load() {
 		return 0
 	}
@@ -280,7 +312,16 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 		ttMove = entry.Move
 	}
 
-	// 2. Null-Move Pruning (NMP)
+	// 2. Reverse Futility Pruning (RFP / Static Null Move Pruning)
+	if depth <= 4 && !inCheck && ply > 0 {
+		margin := 120 * depth
+		eval := evaluation.Evaluate(b)
+		if eval-margin >= beta {
+			return eval - margin
+		}
+	}
+
+	// 3. Null-Move Pruning (NMP)
 	if depth >= 3 && !inCheck && ply > 0 {
 		nonPawnPieces := b.Colors[us] &^ b.Pieces[board.Pawn] &^ b.Pieces[board.King]
 		if nonPawnPieces != 0 {
@@ -288,7 +329,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 			oldEP := b.EnPassant
 			b.EnPassant = board.NoSquare
 
-			nullScore := -w.alphaBeta(b, depth-1-2, -beta, -beta+1, ply+1)
+			nullScore := -w.alphaBeta(b, depth-1-2, -beta, -beta+1, ply+1, move.NullMove)
 
 			b.SideToMove = us
 			b.EnPassant = oldEP
@@ -303,6 +344,15 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 		}
 	}
 
+	// 4. Futility Pruning Flag at frontier nodes (depth == 1)
+	futilityPruning := false
+	if depth == 1 && !inCheck && ply > 0 {
+		eval := evaluation.Evaluate(b)
+		if eval+150 <= alpha {
+			futilityPruning = true
+		}
+	}
+
 	list := &movegen.MoveList{}
 	movegen.GenerateLegalMoves(b, list)
 
@@ -313,7 +363,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 		return 0
 	}
 
-	w.orderMoves(b, list, ttMove, ply)
+	w.orderMoves(b, list, ttMove, ply, prevMove)
 
 	bestMove := move.NullMove
 	bestScore := -Infinity
@@ -329,21 +379,26 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 		m := list.Moves[i]
 		isQuiet := !m.IsCapture() && !m.IsPromotion()
 
+		// Skip quiet moves if futility pruning condition holds
+		if futilityPruning && i > 0 && isQuiet {
+			continue
+		}
+
 		b.MakeMove(m, &undo)
 
 		score := 0
 		if i == 0 {
-			score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1)
+			score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1, m)
 		} else {
 			reduction := 0
 			if i >= 3 && depth >= 3 && isQuiet && !inCheck {
 				reduction = 1
 			}
 
-			score = -w.alphaBeta(b, depth-1-reduction, -alpha-1, -alpha, ply+1)
+			score = -w.alphaBeta(b, depth-1-reduction, -alpha-1, -alpha, ply+1, m)
 
 			if score > alpha && score < beta {
-				score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1)
+				score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1, m)
 			}
 		}
 
@@ -358,6 +413,10 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int) int {
 				w.KillerMoves[ply][1] = w.KillerMoves[ply][0]
 				w.KillerMoves[ply][0] = m
 				w.History[us][m.From()][m.To()] += depth * depth
+
+				if prevMove != move.NullMove {
+					w.CounterMoves[prevMove.From()][prevMove.To()] = m
+				}
 			}
 
 			w.searcher.TT.Store(b.Hash, depth, tt.LowerBound, beta, m)
@@ -459,7 +518,13 @@ type scoredMove struct {
 	score int
 }
 
-func (w *Worker) orderMoves(b *board.Board, list *movegen.MoveList, ttMove move.Move, ply int) {
+var mvvLvaValues = [7]int{0, 100, 200, 300, 400, 500, 600}
+
+func getMvvLvaScore(victim, attacker board.PieceType) int {
+	return mvvLvaValues[victim]*10 - mvvLvaValues[attacker]
+}
+
+func (w *Worker) orderMoves(b *board.Board, list *movegen.MoveList, ttMove move.Move, ply int, prevMove move.Move) {
 	us := b.SideToMove
 	scored := make([]scoredMove, list.Count)
 
@@ -475,10 +540,12 @@ func (w *Worker) orderMoves(b *board.Board, list *movegen.MoveList, ttMove move.
 			attackerSq := board.Square(m.From())
 			attacker := b.PieceAt(attackerSq).Type()
 
+			mvvLva := getMvvLvaScore(victim, attacker)
+
 			if evaluation.SEE(b, m, 0) {
-				score = 10000 + (int(victim)*100 - int(attacker))
+				score = 100000 + mvvLva
 			} else {
-				score = -5000 + (int(victim)*100 - int(attacker))
+				score = -50000 + mvvLva
 			}
 		} else {
 			if ply < MaxDepth {
@@ -486,6 +553,8 @@ func (w *Worker) orderMoves(b *board.Board, list *movegen.MoveList, ttMove move.
 					score = 9000
 				} else if m == w.KillerMoves[ply][1] {
 					score = 8000
+				} else if prevMove != move.NullMove && m == w.CounterMoves[prevMove.From()][prevMove.To()] {
+					score = 7000
 				} else {
 					score = w.History[us][m.From()][m.To()]
 				}
