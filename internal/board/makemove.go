@@ -34,6 +34,11 @@ func (b *Board) MakeMove(m move.Move, undo *Undo) {
 	undo.HalfMove = b.HalfMove
 	undo.Hash = b.Hash
 
+	if b.HistoryCount < len(b.PosHistory) {
+		b.PosHistory[b.HistoryCount] = b.Hash
+		b.HistoryCount++
+	}
+
 	// Incremental Zobrist Hash updates
 	b.Hash ^= zobrist.SideToMove
 	b.Hash ^= zobrist.PieceSquare[us][p.Type()][from]
@@ -136,6 +141,10 @@ func (b *Board) UnmakeMove(undo *Undo) {
 	from := Square(m.From())
 	to := Square(m.To())
 	flag := m.Flag()
+
+	if b.HistoryCount > 0 {
+		b.HistoryCount--
+	}
 
 	// Restore state
 	b.SideToMove = us

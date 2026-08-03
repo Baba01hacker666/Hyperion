@@ -106,6 +106,8 @@ func (s *Searcher) SearchWithLimits(b *board.Board, limits Limits) (move.Move, i
 		s.MaxTime = 4000 * time.Millisecond
 		if evaluation.CurrentStyle == evaluation.StyleEvil {
 			s.MaxTime = 12000 * time.Millisecond
+		} else if evaluation.CurrentStyle == evaluation.StyleBlitz {
+			s.MaxTime = 1000 * time.Millisecond // Blitz Mode: 1 second per move!
 		}
 	}
 
@@ -307,6 +309,14 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 
 	if w.nodes%2048 == 0 && time.Since(w.searcher.StartTime) > w.searcher.MaxTime {
 		w.searcher.Stopped.Store(true)
+		return 0
+	}
+
+	if ply > 0 && b.IsRepetition() {
+		eval := evaluation.Evaluate(b)
+		if eval > 100 {
+			return -50 // Penalize draws when winning to avoid 3-fold repetition
+		}
 		return 0
 	}
 

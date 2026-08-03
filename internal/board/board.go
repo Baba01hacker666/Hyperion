@@ -25,8 +25,10 @@ type Board struct {
 	Castle     CastlingRight        // Current castling rights
 	EnPassant  Square               // En passant target square (NoSquare if none)
 	HalfMove   int                  // Halfmove clock for fifty-move rule
-	FullMove   int                  // Fullmove number
-	Hash       uint64               // Zobrist hash key
+	FullMove     int                  // Fullmove number
+	Hash         uint64               // Zobrist hash key
+	PosHistory   [256]uint64          // Array storing hash history for repetition checking
+	HistoryCount int                  // Total recorded positions in history
 }
 
 // New creates and returns a new empty Board.
@@ -73,6 +75,24 @@ func (b *Board) PieceAt(sq Square) Piece {
 // AllPieces returns a Bitboard containing all pieces on the board.
 func (b *Board) AllPieces() bitboard.Bitboard {
 	return b.Colors[White] | b.Colors[Black]
+}
+
+// IsRepetition checks if the current board position occurred previously in history.
+func (b *Board) IsRepetition() bool {
+	if b.HistoryCount <= 1 {
+		return false
+	}
+	start := b.HistoryCount - b.HalfMove - 1
+	if start < 0 {
+		start = 0
+	}
+	currHash := b.Hash
+	for i := b.HistoryCount - 2; i >= start; i-- {
+		if b.PosHistory[i] == currHash {
+			return true
+		}
+	}
+	return false
 }
 
 // Clone creates a deep copy of the board state.

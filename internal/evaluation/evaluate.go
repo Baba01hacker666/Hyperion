@@ -11,6 +11,7 @@ const (
 	StyleGamble
 	StyleDefense
 	StyleEvil
+	StyleBlitz
 )
 
 var CurrentStyle = StyleBalanced
