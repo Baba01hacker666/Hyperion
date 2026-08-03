@@ -328,10 +328,10 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		return 0
 	}
 
-	if ply > 0 && b.IsRepetition() {
+	if ply > 0 && b.Is2FoldRepetition() {
 		eval := evaluation.Evaluate(b)
 		if eval > 100 {
-			return -50 // Penalize draws when winning to avoid 3-fold repetition
+			return -50 // Penalize draws when we're winning
 		}
 		return 0
 	}

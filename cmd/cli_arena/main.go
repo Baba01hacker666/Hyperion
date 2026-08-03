@@ -62,9 +62,13 @@ func (e *Engine) expect(target string) string {
 	}
 }
 
-func (e *Engine) getBestMove(fen string, depth int) (string, string) {
+func (e *Engine) getBestMove(fen string, depth int, movetime int) (string, string) {
 	e.send(fmt.Sprintf("position fen %s", fen))
-	e.send(fmt.Sprintf("go depth %d", depth))
+	if movetime > 0 {
+		e.send(fmt.Sprintf("go movetime %d", movetime))
+	} else {
+		e.send(fmt.Sprintf("go depth %d", depth))
+	}
 
 	infoLine := ""
 	bestMove := ""
@@ -96,15 +100,25 @@ func (e *Engine) close() {
 
 func main() {
 	numGames := flag.Int("games", 2, "Number of games to play")
-	sfSkill := flag.Int("skill", 3, "Stockfish Skill Level (0-20)")
-	hyperionDepth := flag.Int("hdepth", 5, "Hyperion search depth")
-	sfDepth := flag.Int("sfdepth", 4, "Stockfish search depth")
+	sfSkill := flag.Int("skill", 5, "Stockfish Skill Level (0-20), skill 5 ≈ 1600 Elo")
+	hyperionDepth := flag.Int("hdepth", 0, "Hyperion search depth (0 = use movetime)")
+	sfDepth := flag.Int("sfdepth", 0, "Stockfish search depth (0 = use movetime)")
+	movetime := flag.Int("movetime", 1000, "Time per move in ms (used when depth=0, for blitz mode)")
+	sfMovetime := flag.Int("sfmovetime", 300, "Stockfish time per move in ms")
+	style := flag.String("style", "Blitz", "Hyperion play style: Blitz, Balanced, Gamble, Defense, Evil")
 	flag.Parse()
+
+	blitzMode := (*hyperionDepth == 0)
 
 	fmt.Println("=========================================================")
 	fmt.Println("         HYPERION CLI BENCHMARK & ARENA RUNNER           ")
 	fmt.Println("=========================================================")
-	fmt.Printf("Hyperion (Depth %d) vs Stockfish (Skill %d, Depth %d)\n", *hyperionDepth, *sfSkill, *sfDepth)
+	if blitzMode {
+		fmt.Printf("Hyperion BLITZ (%dms/move, Style=%s) vs Stockfish (Skill %d, %dms/move)\n",
+			*movetime, *style, *sfSkill, *sfMovetime)
+	} else {
+		fmt.Printf("Hyperion (Depth %d) vs Stockfish (Skill %d, Depth %d)\n", *hyperionDepth, *sfSkill, *sfDepth)
+	}
 	fmt.Printf("Total Match Games: %d\n", *numGames)
 	fmt.Println("---------------------------------------------------------")
 
@@ -119,12 +133,19 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to launch Hyperion: %v", err)
 		}
+		hyperion.send(fmt.Sprintf("setoption name Style value %s", *style))
+		hyperion.send("setoption name Hash value 128")
+		hyperion.send("ucinewgame")
+		hyperion.send("isready")
+		hyperion.expect("readyok")
 
-		stockfish, err := newEngine("stockfish")
+		stockfish, err := newEngine("/usr/games/stockfish")
 		if err != nil {
-			log.Fatalf("Failed to launch Stockfish CLI: %v", err)
+			log.Fatalf("Failed to launch Stockfish: %v", err)
 		}
 		stockfish.send(fmt.Sprintf("setoption name Skill Level value %d", *sfSkill))
+		stockfish.send("setoption name Hash value 64")
+		stockfish.send("ucinewgame")
 		stockfish.send("isready")
 		stockfish.expect("readyok")
 
@@ -154,9 +175,17 @@ func main() {
 			start := time.Now()
 			var moveStr, info string
 			if isHyperionTurn {
-				moveStr, info = hyperion.getBestMove(currentFEN, *hyperionDepth)
+				mt := 0
+				if blitzMode {
+					mt = *movetime
+				}
+				moveStr, info = hyperion.getBestMove(currentFEN, *hyperionDepth, mt)
 			} else {
-				moveStr, info = stockfish.getBestMove(currentFEN, *sfDepth)
+				mt := 0
+				if blitzMode {
+					mt = *sfMovetime
+				}
+				moveStr, info = stockfish.getBestMove(currentFEN, *sfDepth, mt)
 			}
 			elapsed := time.Since(start)
 

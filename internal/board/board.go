@@ -77,19 +77,44 @@ func (b *Board) AllPieces() bitboard.Bitboard {
 	return b.Colors[White] | b.Colors[Black]
 }
 
-// IsRepetition checks if the current board position occurred previously in history.
+// IsRepetition checks if the current board position has occurred at least twice before
+// (i.e. we are about to make it a 3-fold repetition, which is a draw).
 func (b *Board) IsRepetition() bool {
-	if b.HistoryCount <= 1 {
+	if b.HistoryCount < 4 {
 		return false
 	}
-	start := b.HistoryCount - b.HalfMove - 1
-	if start < 0 {
-		start = 0
+	currHash := b.Hash
+	count := 0
+	// Only check positions of the same side to move (every 2 plies back)
+	// and stop at irreversible moves (halfmove clock resets)
+	for i := b.HistoryCount - 2; i >= 0; i -= 2 {
+		if b.PosHistory[i] == currHash {
+			count++
+			if count >= 2 {
+				return true
+			}
+		}
+		// Stop searching back past an irreversible move
+		if i < b.HistoryCount-int(b.HalfMove) {
+			break
+		}
+	}
+	return false
+}
+
+// Is2FoldRepetition returns true if current position has occurred at least once before
+// (i.e., this is the 2nd occurrence = 2-fold repetition). Used in search to score as draw.
+func (b *Board) Is2FoldRepetition() bool {
+	if b.HistoryCount < 2 {
+		return false
 	}
 	currHash := b.Hash
-	for i := b.HistoryCount - 2; i >= start; i-- {
+	for i := b.HistoryCount - 2; i >= 0; i -= 2 {
 		if b.PosHistory[i] == currHash {
 			return true
+		}
+		if i < b.HistoryCount-int(b.HalfMove) {
+			break
 		}
 	}
 	return false
