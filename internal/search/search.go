@@ -74,6 +74,12 @@ type Worker struct {
 	CounterMoves [64][64]move.Move
 }
 
+type rootSearchResult struct {
+	bestMove move.Move
+	score    int
+	complete bool
+}
+
 func NewSearcher(ttSizeMB int) *Searcher {
 	return &Searcher{
 		TT:      tt.NewTable(ttSizeMB),
@@ -155,7 +161,7 @@ func (s *Searcher) SearchWithLimits(b *board.Board, limits Limits) (move.Move, i
 }
 
 func (w *Worker) runMainSearch(maxDepth int) (move.Move, int) {
-	var overallBestMove move.Move
+	overallBestMove := w.rootFallbackMove(w.board)
 	var overallBestScore int
 
 	alpha := -Infinity
@@ -185,19 +191,23 @@ func (w *Worker) runMainSearch(maxDepth int) (move.Move, int) {
 				break
 			}
 
-			bestMove, score := w.searchRoot(w.board, depth, alpha, beta)
-			if bestMove != move.NullMove && !w.searcher.Stopped.Load() {
-				overallBestMove = bestMove
-				overallBestScore = score
+			result := w.searchRoot(w.board, depth, alpha, beta)
+			if result.complete && result.bestMove != move.NullMove {
+				overallBestMove = result.bestMove
+				overallBestScore = result.score
 			}
 
-			if score <= alpha {
+			if !result.complete {
+				break
+			}
+
+			if result.score <= alpha {
 				window *= 2
 				alpha = overallBestScore - window
 				if alpha < -Infinity/2 {
 					alpha = -Infinity
 				}
-			} else if score >= beta {
+			} else if result.score >= beta {
 				window *= 2
 				beta = overallBestScore + window
 				if beta > Infinity/2 {
@@ -211,10 +221,10 @@ func (w *Worker) runMainSearch(maxDepth int) (move.Move, int) {
 			if researches >= 3 {
 				alpha = -Infinity
 				beta = Infinity
-				bestMove, score = w.searchRoot(w.board, depth, alpha, beta)
-				if bestMove != move.NullMove && !w.searcher.Stopped.Load() {
-					overallBestMove = bestMove
-					overallBestScore = score
+				result = w.searchRoot(w.board, depth, alpha, beta)
+				if result.complete && result.bestMove != move.NullMove {
+					overallBestMove = result.bestMove
+					overallBestScore = result.score
 				}
 				break
 			}
@@ -253,12 +263,27 @@ func (w *Worker) runHelperSearch(maxDepth int) {
 	}
 }
 
-func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move, int) {
+func (w *Worker) rootFallbackMove(b *board.Board) move.Move {
+	list := &movegen.MoveList{}
+	movegen.GenerateLegalMoves(b, list)
+	if list.Count == 0 {
+		return move.NullMove
+	}
+
+	ttMove := move.NullMove
+	if entry, ok := w.searcher.TT.Probe(b.Hash); ok {
+		ttMove = entry.Move
+	}
+	w.orderMoves(b, list, ttMove, 0, move.NullMove)
+	return list.Moves[0]
+}
+
+func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) rootSearchResult {
 	list := &movegen.MoveList{}
 	movegen.GenerateLegalMoves(b, list)
 
 	if list.Count == 0 {
-		return move.NullMove, 0
+		return rootSearchResult{bestMove: move.NullMove, score: 0, complete: true}
 	}
 
 	us := b.SideToMove
@@ -278,7 +303,7 @@ func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move, 
 
 	w.orderMoves(b, list, ttMove, 0, move.NullMove)
 
-	bestMove := list.Moves[0]
+	bestMove := move.NullMove
 	bestScore := -Infinity
 
 	var undo board.Undo
@@ -320,10 +345,11 @@ func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) (move.Move, 
 		}
 	}
 
-	if !w.searcher.Stopped.Load() {
+	complete := !w.searcher.Stopped.Load()
+	if complete && bestMove != move.NullMove {
 		w.searcher.TT.Store(b.Hash, depth, tt.Exact, bestScore, bestMove)
 	}
-	return bestMove, bestScore
+	return rootSearchResult{bestMove: bestMove, score: bestScore, complete: complete}
 }
 
 // Principal Variation Search (PVS) with Alpha-Beta Pruning.
