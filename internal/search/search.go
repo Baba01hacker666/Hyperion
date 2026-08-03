@@ -169,7 +169,7 @@ func (w *Worker) runMainSearch(maxDepth int) (move.Move, int) {
 			break
 		}
 
-		window := 50
+		window := 25
 		if depth >= 4 {
 			alpha = overallBestScore - window
 			beta = overallBestScore + window
@@ -191,17 +191,23 @@ func (w *Worker) runMainSearch(maxDepth int) (move.Move, int) {
 			}
 
 			if score <= alpha {
-				alpha -= window * 2
 				window *= 2
+				alpha = overallBestScore - window
+				if alpha < -Infinity/2 {
+					alpha = -Infinity
+				}
 			} else if score >= beta {
-				beta += window * 2
 				window *= 2
+				beta = overallBestScore + window
+				if beta > Infinity/2 {
+					beta = Infinity
+				}
 			} else {
 				break
 			}
 
 			researches++
-			if researches >= 2 {
+			if researches >= 3 {
 				alpha = -Infinity
 				beta = Infinity
 				bestMove, score = w.searchRoot(w.board, depth, alpha, beta)
@@ -345,21 +351,45 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 
 	// 1. Transposition Table Lookup
 	ttMove := move.NullMove
-	if entry, ok := w.searcher.TT.Probe(b.Hash); ok && int(entry.Depth) >= depth {
-		if entry.Flag == tt.Exact {
-			return int(entry.Score)
-		} else if entry.Flag == tt.LowerBound && int(entry.Score) >= beta {
-			return int(entry.Score)
-		} else if entry.Flag == tt.UpperBound && int(entry.Score) <= alpha {
-			return int(entry.Score)
-		}
+	ttDepth := 0
+	ttScore := 0
+	ttFlag := tt.Exact
+	if entry, ok := w.searcher.TT.Probe(b.Hash); ok {
 		ttMove = entry.Move
+		ttDepth = int(entry.Depth)
+		ttScore = int(entry.Score)
+		ttFlag = entry.Flag
+		// Only use TT score for cutoff if depth is sufficient
+		if ttDepth >= depth {
+			if ttFlag == tt.Exact {
+				return ttScore
+			} else if ttFlag == tt.LowerBound && ttScore >= beta {
+				return ttScore
+			} else if ttFlag == tt.UpperBound && ttScore <= alpha {
+				return ttScore
+			}
+		}
+	}
+
+	// Static evaluation (computed once, used by multiple pruning steps)
+	staticEval := evaluation.Evaluate(b)
+
+	// Improving: is our position better than 2 plies ago?
+	// (We approximate by just using current eval vs zero for simplicity)
+	improving := !inCheck && staticEval > 0
+
+	// Internal Iterative Deepening (IID): if no TT move and depth is large,
+	// do a shallow search to find a good move to try first.
+	if ttMove == move.NullMove && depth >= 5 && !inCheck {
+		w.alphaBeta(b, depth-4, alpha, beta, ply, prevMove)
+		if entry, ok := w.searcher.TT.Probe(b.Hash); ok {
+			ttMove = entry.Move
+		}
 	}
 
 	// 2. Razoring
 	if depth <= 3 && !inCheck && ply > 0 {
-		eval := evaluation.Evaluate(b)
-		if eval < alpha-300-150*depth {
+		if staticEval < alpha-300-150*depth {
 			qScore := w.quiescence(b, alpha, beta, ply)
 			if qScore < alpha {
 				return qScore
@@ -368,11 +398,13 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 	}
 
 	// 3. Reverse Futility Pruning (RFP / Static Null Move Pruning)
-	if depth <= 4 && !inCheck && ply > 0 {
-		margin := 120 * depth
-		eval := evaluation.Evaluate(b)
-		if eval-margin >= beta {
-			return eval - margin
+	if depth <= 7 && !inCheck && ply > 0 {
+		margin := 70 * depth
+		if improving {
+			margin -= 20 // Less aggressive pruning when improving
+		}
+		if staticEval-margin >= beta {
+			return staticEval - margin
 		}
 	}
 
@@ -400,11 +432,14 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		}
 	}
 
-	// 5. Futility Pruning Flag at frontier nodes (depth == 1)
+	// 5. Extended Futility Pruning (depth <= 3)
 	futilityPruning := false
-	if depth == 1 && !inCheck && ply > 0 {
-		eval := evaluation.Evaluate(b)
-		if eval+150 <= alpha {
+	if depth <= 3 && !inCheck && ply > 0 {
+		futilityMargin := 100 + 120*depth
+		if improving {
+			futilityMargin += 50
+		}
+		if staticEval+futilityMargin <= alpha {
 			futilityPruning = true
 		}
 	}
@@ -434,14 +469,19 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		}
 
 		m := list.Moves[i]
-		isQuiet := !m.IsCapture() && !m.IsPromotion()
+		isCapture := m.IsCapture()
+		isPromotion := m.IsPromotion()
+		isQuiet := !isCapture && !isPromotion
 
 		if isQuiet {
 			quietCount++
 
 			// Late Move Pruning (LMP)
 			maxQuiets := 3 + depth*depth
-			if depth <= 4 && !inCheck && ply > 0 && quietCount > maxQuiets {
+			if improving {
+				maxQuiets += depth // Allow more moves when improving
+			}
+			if depth <= 5 && !inCheck && ply > 0 && quietCount > maxQuiets {
 				continue
 			}
 
@@ -451,6 +491,11 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 			}
 		}
 
+		// SEE-based capture pruning: skip bad captures at shallow depths
+		if isCapture && !isPromotion && depth <= 3 && !inCheck && !evaluation.SEE(b, m, -50*depth) {
+			continue
+		}
+
 		b.MakeMove(m, &undo)
 
 		score := 0
@@ -458,7 +503,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 			score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1, m)
 		} else {
 			reduction := 0
-			if i >= 3 && depth >= 3 && isQuiet && !inCheck {
+			if i >= 3 && depth >= 3 && !inCheck {
 				mIdx := i
 				if mIdx >= 64 {
 					mIdx = 63
@@ -467,13 +512,39 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 				if dIdx >= MaxDepth {
 					dIdx = MaxDepth - 1
 				}
-				reduction = lmrTable[dIdx][mIdx]
+				if isQuiet {
+					reduction = lmrTable[dIdx][mIdx]
+					// Reduce more for non-improving positions
+					if !improving {
+						reduction++
+					}
+					// History-based LMR adjustment
+					histScore := w.History[us][m.From()][m.To()]
+					if histScore > 3000 {
+						reduction-- // Reduce less for historically good moves
+					} else if histScore < -1000 {
+						reduction++ // Reduce more for historically bad moves
+					}
+				} else {
+					// Apply small LMR on captures too at high move indices
+					if i >= 6 {
+						reduction = 1
+					}
+				}
+				if reduction < 0 {
+					reduction = 0
+				}
 				if reduction >= depth {
 					reduction = depth - 1
 				}
 			}
 
 			score = -w.alphaBeta(b, depth-1-reduction, -alpha-1, -alpha, ply+1, m)
+
+			// Re-search if LMR failed high
+			if score > alpha && reduction > 0 {
+				score = -w.alphaBeta(b, depth-1, -alpha-1, -alpha, ply+1, m)
+			}
 
 			if score > alpha && score < beta {
 				score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1, m)
@@ -493,6 +564,15 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 
 				bonus := depth * depth
 				applyHistoryBonus(&w.History[us][m.From()][m.To()], bonus, 10000)
+
+				// History malus: penalize all other quiet moves searched before this
+				malus := -(depth * depth / 2)
+				for j := 0; j < i; j++ {
+					prev := list.Moves[j]
+					if !prev.IsCapture() && !prev.IsPromotion() && prev != m {
+						applyHistoryBonus(&w.History[us][prev.From()][prev.To()], malus, 10000)
+					}
+				}
 
 				if prevMove != move.NullMove {
 					w.CounterMoves[prevMove.From()][prevMove.To()] = m

@@ -33,6 +33,85 @@ func EvaluatePositional(b *board.Board) int {
 	// 5. Knight Outposts
 	score += evaluateKnights(b, board.White) - evaluateKnights(b, board.Black)
 
+	// 6. Tempo bonus (small advantage to side to move)
+	if b.SideToMove == board.White {
+		score += 12
+	} else {
+		score -= 12
+	}
+
+	// 7. Rook on 7th rank bonus (very strong in endgame)
+	score += evaluateRookBonus(b, board.White) - evaluateRookBonus(b, board.Black)
+
+	// 8. Space advantage in the center
+	score += evaluateSpace(b, board.White) - evaluateSpace(b, board.Black)
+
+	return score
+}
+
+func evaluateRookBonus(b *board.Board, color board.Color) int {
+	score := 0
+	rooks := b.Pieces[board.Rook] & b.Colors[color]
+	occ := b.AllPieces()
+
+	var seventhRank, enemyKingRank int
+	if color == board.White {
+		seventhRank = 6
+		enemyKingRank = int(board.Square((b.Colors[board.Black] & b.Pieces[board.King]).LSB()).Rank())
+	} else {
+		seventhRank = 1
+		enemyKingRank = int(board.Square((b.Colors[board.White] & b.Pieces[board.King]).LSB()).Rank())
+	}
+
+	_ = enemyKingRank
+
+	firstRook := board.NoSquare
+	for rooks != 0 {
+		sq := board.Square(rooks.PopLSB())
+		rank := int(sq.Rank())
+
+		// Rook on 7th rank (or 2nd for black) - powerful!
+		if rank == seventhRank {
+			score += 30
+		}
+
+		// Connected rooks on same rank or file
+		if firstRook != board.NoSquare {
+			sameFile := sq.File() == firstRook.File()
+			sameRank := sq.Rank() == firstRook.Rank()
+			if sameFile || sameRank {
+				// Check if they can see each other directly
+				rookAttacks := magic.GetRookAttacks(int(sq), occ)
+				if rookAttacks&(bitboard.Bitboard(1)<<uint(firstRook)) != 0 {
+					score += 20 // Connected rooks bonus
+				}
+			}
+		}
+		firstRook = sq
+	}
+
+	return score
+}
+
+func evaluateSpace(b *board.Board, color board.Color) int {
+	// Space: number of safe squares in the center our pieces attack
+	score := 0
+
+	// Center squares
+	var center bitboard.Bitboard
+	if color == board.White {
+		// For white: center squares on ranks 2-4 (indices 16-39)
+		center = bitboard.RankMasks[2] | bitboard.RankMasks[3] | bitboard.RankMasks[4]
+		center &= bitboard.FileMasks[2] | bitboard.FileMasks[3] | bitboard.FileMasks[4] | bitboard.FileMasks[5]
+	} else {
+		center = bitboard.RankMasks[3] | bitboard.RankMasks[4] | bitboard.RankMasks[5]
+		center &= bitboard.FileMasks[2] | bitboard.FileMasks[3] | bitboard.FileMasks[4] | bitboard.FileMasks[5]
+	}
+
+	// Count pawns we have in the extended center
+	centerPawns := (b.Pieces[board.Pawn] & b.Colors[color] & center).PopCount()
+	score += centerPawns * 4
+
 	return score
 }
 
