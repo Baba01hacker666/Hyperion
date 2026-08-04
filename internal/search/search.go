@@ -9,7 +9,6 @@ import (
 	"hyperion/internal/movegen"
 	"hyperion/internal/tt"
 	"math"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,15 +62,31 @@ type Searcher struct {
 	Nodes     atomic.Uint64
 }
 
+type stackEntry struct {
+	eval  int
+	move  move.Move
+	piece board.PieceType
+}
+
+type pawnEntry struct {
+	hash  uint64
+	score int
+}
+
 // Worker holds per-thread state to avoid data races.
 type Worker struct {
-	id           int
-	searcher     *Searcher
-	board        *board.Board
-	nodes        uint64
-	KillerMoves  [MaxDepth][2]move.Move
-	History      [2][64][64]int
-	CounterMoves [64][64]move.Move
+	id             int
+	searcher       *Searcher
+	board          *board.Board
+	nodes          uint64
+	stack          [MaxDepth + 4]stackEntry
+	pawnTT         [4096]pawnEntry
+	KillerMoves    [MaxDepth][2]move.Move
+	History        [2][64][64]int
+	CaptureHistory [6][64][6]int
+	ContHist1      [6][64][6][64]int
+	ContHist2      [6][64][6][64]int
+	CounterMoves   [64][64]move.Move
 }
 
 type rootSearchResult struct {
@@ -114,7 +129,7 @@ func (s *Searcher) SearchWithLimits(b *board.Board, limits Limits) (move.Move, i
 		if evaluation.CurrentStyle == evaluation.StyleEvil {
 			s.MaxTime = 12000 * time.Millisecond
 		} else if evaluation.CurrentStyle == evaluation.StyleBlitz {
-			s.MaxTime = 1000 * time.Millisecond // Blitz Mode: 1 second per move!
+			s.MaxTime = 1000 * time.Millisecond
 		}
 	}
 
@@ -274,7 +289,7 @@ func (w *Worker) rootFallbackMove(b *board.Board) move.Move {
 	if entry, ok := w.searcher.TT.Probe(b.Hash); ok {
 		ttMove = entry.Move
 	}
-	w.orderMoves(b, list, ttMove, 0, move.NullMove)
+	w.orderMoves(b, list, ttMove, 0, move.NullMove, board.NoPieceType, move.NullMove, board.NoPieceType)
 	return list.Moves[0]
 }
 
@@ -301,7 +316,7 @@ func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) rootSearchRe
 		ttMove = entry.Move
 	}
 
-	w.orderMoves(b, list, ttMove, 0, move.NullMove)
+	w.orderMoves(b, list, ttMove, 0, move.NullMove, board.NoPieceType, move.NullMove, board.NoPieceType)
 
 	bestMove := move.NullMove
 	bestScore := -Infinity
@@ -317,15 +332,20 @@ func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) rootSearchRe
 			break
 		}
 		m := list.Moves[i]
+		pt := b.PieceAt(board.Square(m.From())).Type()
+
 		b.MakeMove(m, &undo)
+
+		w.stack[1].move = m
+		w.stack[1].piece = pt
 
 		score := 0
 		if i == 0 {
-			score = -w.alphaBeta(b, searchDepth-1, -beta, -alpha, 1, m)
+			score = -w.alphaBeta(b, searchDepth-1, -beta, -alpha, 1, m, pt)
 		} else {
-			score = -w.alphaBeta(b, searchDepth-1, -alpha-1, -alpha, 1, m)
+			score = -w.alphaBeta(b, searchDepth-1, -alpha-1, -alpha, 1, m, pt)
 			if score > alpha && score < beta {
-				score = -w.alphaBeta(b, searchDepth-1, -beta, -alpha, 1, m)
+				score = -w.alphaBeta(b, searchDepth-1, -beta, -alpha, 1, m, pt)
 			}
 		}
 
@@ -353,7 +373,7 @@ func (w *Worker) searchRoot(b *board.Board, depth, alpha, beta int) rootSearchRe
 }
 
 // Principal Variation Search (PVS) with Alpha-Beta Pruning.
-func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove move.Move) int {
+func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove move.Move, prevPiece board.PieceType) int {
 	if w.searcher.Stopped.Load() {
 		return 0
 	}
@@ -397,7 +417,6 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		ttDepth = int(entry.Depth)
 		ttScore = int(entry.Score)
 		ttFlag = entry.Flag
-		// Only use TT score for cutoff if depth is sufficient
 		if ttDepth >= depth {
 			if ttFlag == tt.Exact {
 				return ttScore
@@ -409,17 +428,22 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		}
 	}
 
-	// Static evaluation (computed once, used by multiple pruning steps)
+	// Static evaluation
 	staticEval := evaluation.Evaluate(b)
+	w.stack[ply+2].eval = staticEval
 
-	// Improving: is our position better than 2 plies ago?
-	// (We approximate by just using current eval vs zero for simplicity)
-	improving := !inCheck && staticEval > 0
+	// Accurate improving calculation comparing against 2 plies ago
+	improving := false
+	if !inCheck && ply >= 2 {
+		improving = staticEval > w.stack[ply].eval
+	} else if !inCheck {
+		improving = staticEval > 0
+	}
 
 	// Internal Iterative Deepening (IID): if no TT move and depth is large,
 	// do a shallow search to find a good move to try first.
 	if ttMove == move.NullMove && depth >= 6 && !inCheck {
-		w.alphaBeta(b, depth-3, alpha, beta, ply, prevMove)
+		w.alphaBeta(b, depth-3, alpha, beta, ply, prevMove, prevPiece)
 		if entry, ok := w.searcher.TT.Probe(b.Hash); ok {
 			ttMove = entry.Move
 		}
@@ -439,7 +463,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 	if depth <= 7 && !inCheck && ply > 0 {
 		margin := 70 * depth
 		if improving {
-			margin -= 20 // Less aggressive pruning when improving
+			margin -= 20
 		}
 		if staticEval-margin >= beta {
 			return staticEval - margin
@@ -455,7 +479,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 			b.EnPassant = board.NoSquare
 
 			R := 3 + depth/4
-			nullScore := -w.alphaBeta(b, depth-1-R, -beta, -beta+1, ply+1, move.NullMove)
+			nullScore := -w.alphaBeta(b, depth-1-R, -beta, -beta+1, ply+1, move.NullMove, board.NoPieceType)
 
 			b.SideToMove = us
 			b.EnPassant = oldEP
@@ -492,7 +516,14 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		return 0
 	}
 
-	w.orderMoves(b, list, ttMove, ply, prevMove)
+	prevPrevMove := move.NullMove
+	prevPrevPiece := board.NoPieceType
+	if ply >= 2 {
+		prevPrevMove = w.stack[ply].move
+		prevPrevPiece = w.stack[ply].piece
+	}
+
+	w.orderMoves(b, list, ttMove, ply, prevMove, prevPiece, prevPrevMove, prevPrevPiece)
 
 	bestMove := move.NullMove
 	bestScore := -Infinity
@@ -517,7 +548,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 			// Late Move Pruning (LMP)
 			maxQuiets := 3 + depth*depth
 			if improving {
-				maxQuiets += depth // Allow more moves when improving
+				maxQuiets += depth
 			}
 			if depth <= 5 && !inCheck && ply > 0 && quietCount > maxQuiets {
 				continue
@@ -534,11 +565,20 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 			continue
 		}
 
+		pt := b.PieceAt(board.Square(m.From())).Type()
+		var victimType board.PieceType
+		if isCapture {
+			victimType = b.PieceAt(board.Square(m.To())).Type()
+		}
+
 		b.MakeMove(m, &undo)
+
+		w.stack[ply+1].move = m
+		w.stack[ply+1].piece = pt
 
 		score := 0
 		if i == 0 {
-			score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1, m)
+			score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1, m, pt)
 		} else {
 			reduction := 0
 			if i >= 3 && depth >= 3 && !inCheck {
@@ -552,19 +592,24 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 				}
 				if isQuiet {
 					reduction = lmrTable[dIdx][mIdx]
-					// Reduce more for non-improving positions
 					if !improving {
 						reduction++
 					}
-					// History-based LMR adjustment
 					histScore := w.History[us][m.From()][m.To()]
 					if histScore > 3000 {
-						reduction-- // Reduce less for historically good moves
+						reduction--
 					} else if histScore < -1000 {
-						reduction++ // Reduce more for historically bad moves
+						reduction++
+					}
+					if prevPiece < 6 && pt < 6 {
+						contScore := w.ContHist1[prevPiece][prevMove.To()][pt][m.To()]
+						if contScore > 2000 {
+							reduction--
+						} else if contScore < -1000 {
+							reduction++
+						}
 					}
 				} else {
-					// Apply small LMR on captures too at high move indices
 					if i >= 6 {
 						reduction = 1
 					}
@@ -577,15 +622,14 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 				}
 			}
 
-			score = -w.alphaBeta(b, depth-1-reduction, -alpha-1, -alpha, ply+1, m)
+			score = -w.alphaBeta(b, depth-1-reduction, -alpha-1, -alpha, ply+1, m, pt)
 
-			// Re-search if LMR failed high
 			if score > alpha && reduction > 0 {
-				score = -w.alphaBeta(b, depth-1, -alpha-1, -alpha, ply+1, m)
+				score = -w.alphaBeta(b, depth-1, -alpha-1, -alpha, ply+1, m, pt)
 			}
 
 			if score > alpha && score < beta {
-				score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1, m)
+				score = -w.alphaBeta(b, depth-1, -beta, -alpha, ply+1, m, pt)
 			}
 		}
 
@@ -603,18 +647,39 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 				bonus := depth * depth
 				applyHistoryBonus(&w.History[us][m.From()][m.To()], bonus, 10000)
 
-				// History malus: penalize all other quiet moves searched before this
+				if prevPiece < 6 && pt < 6 {
+					applyHistoryBonus(&w.ContHist1[prevPiece][prevMove.To()][pt][m.To()], bonus, 10000)
+				}
+				if prevPrevPiece < 6 && pt < 6 {
+					applyHistoryBonus(&w.ContHist2[prevPrevPiece][prevPrevMove.To()][pt][m.To()], bonus, 10000)
+				}
+
 				malus := -(depth * depth / 2)
 				for j := 0; j < i; j++ {
 					prev := list.Moves[j]
 					if !prev.IsCapture() && !prev.IsPromotion() && prev != m {
+						prevPt := b.PieceAt(board.Square(prev.From())).Type()
 						applyHistoryBonus(&w.History[us][prev.From()][prev.To()], malus, 10000)
+						if prevPiece < 6 && prevPt < 6 {
+							applyHistoryBonus(&w.ContHist1[prevPiece][prevMove.To()][prevPt][prev.To()], malus, 10000)
+						}
 					}
 				}
 
 				if prevMove != move.NullMove {
 					w.CounterMoves[prevMove.From()][prevMove.To()] = m
 				}
+			} else if isCapture && !isPromotion {
+				bonus := depth * depth
+				vt := victimType
+				if vt >= 6 {
+					vt = board.Pawn
+				}
+				ptAtt := pt
+				if ptAtt >= 6 {
+					ptAtt = board.Pawn
+				}
+				applyHistoryBonus(&w.CaptureHistory[ptAtt][m.To()][vt], bonus, 10000)
 			}
 
 			w.searcher.TT.Store(b.Hash, depth, tt.LowerBound, beta, m)
@@ -642,7 +707,7 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 	return bestScore
 }
 
-// Quiescence Search with SEE, Delta Pruning, and Check Evasions.
+// Quiescence Search with SEE and Check Evasions.
 func (w *Worker) quiescence(b *board.Board, alpha, beta, ply int) int {
 	if w.searcher.Stopped.Load() {
 		return 0
@@ -725,62 +790,85 @@ func (w *Worker) quiescence(b *board.Board, alpha, beta, ply int) int {
 	return alpha
 }
 
-type scoredMove struct {
-	m     move.Move
-	score int
-}
-
 var mvvLvaValues = [7]int{0, 100, 200, 300, 400, 500, 600}
 
 func getMvvLvaScore(victim, attacker board.PieceType) int {
 	return mvvLvaValues[victim]*10 - mvvLvaValues[attacker]
 }
 
-func (w *Worker) orderMoves(b *board.Board, list *movegen.MoveList, ttMove move.Move, ply int, prevMove move.Move) {
+func (w *Worker) scoreMove(b *board.Board, m move.Move, ttMove move.Move, ply int,
+	prevMove move.Move, prevPiece board.PieceType,
+	prevPrevMove move.Move, prevPrevPiece board.PieceType) int {
 	us := b.SideToMove
-	scored := make([]scoredMove, list.Count)
 
-	for i := 0; i < list.Count; i++ {
-		m := list.Moves[i]
-		score := 0
-
-		if m == ttMove {
-			score = 1000000
-		} else if m.IsCapture() {
-			victimSq := board.Square(m.To())
-			victim := b.PieceAt(victimSq).Type()
-			attackerSq := board.Square(m.From())
-			attacker := b.PieceAt(attackerSq).Type()
-
-			mvvLva := getMvvLvaScore(victim, attacker)
-
-			if evaluation.SEE(b, m, 0) {
-				score = 100000 + mvvLva
-			} else {
-				score = -50000 + mvvLva
-			}
-		} else {
-			if ply < MaxDepth {
-				if m == w.KillerMoves[ply][0] {
-					score = 9000
-				} else if m == w.KillerMoves[ply][1] {
-					score = 8000
-				} else if prevMove != move.NullMove && m == w.CounterMoves[prevMove.From()][prevMove.To()] {
-					score = 7000
-				} else {
-					score = w.History[us][m.From()][m.To()]
-				}
-			}
-		}
-
-		scored[i] = scoredMove{m: m, score: score}
+	if m == ttMove {
+		return 10_000_000
 	}
 
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
-	})
+	if m.IsCapture() {
+		victimSq := board.Square(m.To())
+		victim := b.PieceAt(victimSq).Type()
+		if victim >= 6 {
+			victim = board.Pawn
+		}
+		attackerSq := board.Square(m.From())
+		attacker := b.PieceAt(attackerSq).Type()
+		if attacker >= 6 {
+			attacker = board.Pawn
+		}
+		mvvLva := getMvvLvaScore(victim, attacker)
+
+		if evaluation.SEE(b, m, 0) {
+			captHist := w.CaptureHistory[attacker][m.To()][victim]
+			return 100_000 + mvvLva + captHist/100
+		}
+		return -50_000 + mvvLva
+	}
+
+	pt := b.PieceAt(board.Square(m.From())).Type()
+	if ply < MaxDepth {
+		if m == w.KillerMoves[ply][0] {
+			return 9000
+		}
+		if m == w.KillerMoves[ply][1] {
+			return 8000
+		}
+		if prevMove != move.NullMove && m == w.CounterMoves[prevMove.From()][prevMove.To()] {
+			return 7000
+		}
+	}
+
+	score := w.History[us][m.From()][m.To()]
+
+	if prevPiece < 6 && pt < 6 {
+		score += w.ContHist1[prevPiece][prevMove.To()][pt][m.To()] * 2
+	}
+	if prevPrevPiece < 6 && pt < 6 {
+		score += w.ContHist2[prevPrevPiece][prevPrevMove.To()][pt][m.To()]
+	}
+
+	return score
+}
+
+// orderMoves uses partial selection sort (pick-best) for high performance.
+func (w *Worker) orderMoves(b *board.Board, list *movegen.MoveList, ttMove move.Move, ply int,
+	prevMove move.Move, prevPiece board.PieceType,
+	prevPrevMove move.Move, prevPrevPiece board.PieceType) {
+	scores := make([]int, list.Count)
+	for i := 0; i < list.Count; i++ {
+		scores[i] = w.scoreMove(b, list.Moves[i], ttMove, ply, prevMove, prevPiece, prevPrevMove, prevPrevPiece)
+	}
 
 	for i := 0; i < list.Count; i++ {
-		list.Moves[i] = scored[i].m
+		bestIdx := i
+		for j := i + 1; j < list.Count; j++ {
+			if scores[j] > scores[bestIdx] {
+				bestIdx = j
+			}
+		}
+		if bestIdx != i {
+			list.Moves[i], list.Moves[bestIdx] = list.Moves[bestIdx], list.Moves[i]
+			scores[i], scores[bestIdx] = scores[bestIdx], scores[i]
+		}
 	}
 }

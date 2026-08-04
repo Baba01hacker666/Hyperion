@@ -196,6 +196,23 @@ func evaluatePawns(b *board.Board, color board.Color) int {
 		if (b.Pieces[board.Pawn]&b.Colors[color]&adjFiles) == 0 {
 			score -= 12
 		}
+
+		// Backward Pawn Penalty
+		if (adjFiles & b.Pieces[board.Pawn] & b.Colors[color]) == 0 {
+			var behindMask bitboard.Bitboard
+			if color == board.White {
+				for r := int(rank) - 1; r >= 0; r-- {
+					behindMask |= bitboard.RankMasks[r] & fileMask
+				}
+			} else {
+				for r := int(rank) + 1; r <= 7; r++ {
+					behindMask |= bitboard.RankMasks[r] & fileMask
+				}
+			}
+			if (behindMask & b.Pieces[board.Pawn] & b.Colors[color]) == 0 {
+				score -= 8
+			}
+		}
 	}
 
 	return score
