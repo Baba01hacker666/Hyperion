@@ -17,8 +17,19 @@ const (
 var CurrentStyle = StyleBalanced
 
 // SetStyle configures the engine's play style.
-func SetStyle(s Style) {
-	CurrentStyle = s
+func SetStyle(s string) {
+	switch s {
+	case "Gamble":
+		CurrentStyle = StyleGamble
+	case "Defense":
+		CurrentStyle = StyleDefense
+	case "Evil":
+		CurrentStyle = StyleEvil
+	case "Blitz":
+		CurrentStyle = StyleBlitz
+	default:
+		CurrentStyle = StyleBalanced
+	}
 }
 
 // Evaluate returns a tapered evaluation of the board from the perspective of the side to move.

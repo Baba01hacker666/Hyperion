@@ -8,6 +8,7 @@ import (
 	"hyperion/internal/move"
 	"hyperion/internal/movegen"
 	"hyperion/internal/opening"
+	"hyperion/internal/persona"
 	"hyperion/internal/search"
 	"os"
 	"strconv"
@@ -78,15 +79,15 @@ func parseSetOption(args []string) {
 	if name == "style" {
 		switch value {
 		case "gamble":
-			evaluation.SetStyle(evaluation.StyleGamble)
+			evaluation.SetStyle("Gamble")
 		case "defense":
-			evaluation.SetStyle(evaluation.StyleDefense)
+			evaluation.SetStyle("Defense")
 		case "evil":
-			evaluation.SetStyle(evaluation.StyleEvil)
+			evaluation.SetStyle("Evil")
 		case "blitz":
-			evaluation.SetStyle(evaluation.StyleBlitz)
+			evaluation.SetStyle("Blitz")
 		default:
-			evaluation.SetStyle(evaluation.StyleBalanced)
+			evaluation.SetStyle("Balanced")
 		}
 	} else if name == "hash" {
 		if sz, err := strconv.Atoi(value); err == nil && sz >= 1 {
@@ -95,6 +96,17 @@ func parseSetOption(args []string) {
 	} else if name == "threads" {
 		if t, err := strconv.Atoi(value); err == nil && t >= 1 {
 			numThreads = t
+		}
+	} else if name == "persona" {
+		err := persona.LoadPersona(value)
+		if err != nil {
+			fmt.Printf("info string failed to load persona: %v\n", err)
+		} else {
+			fmt.Printf("info string loaded persona %s\n", persona.ActivePersona.Name)
+			search.RebuildLMRTable()
+			if persona.ActivePersona.EvalStyle != "" {
+				evaluation.SetStyle(persona.ActivePersona.EvalStyle)
+			}
 		}
 	}
 }

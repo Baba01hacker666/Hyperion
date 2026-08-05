@@ -1,18 +1,19 @@
 package search
 
 import (
+	"fmt"
 	"hyperion/internal/attack"
 	"hyperion/internal/board"
 	"hyperion/internal/evaluation"
 	"hyperion/internal/move"
 	"hyperion/internal/movegen"
+	"hyperion/internal/persona"
 	"hyperion/internal/tt"
 	"hyperion/internal/zobrist"
 	"math"
 	"sync"
 	"sync/atomic"
 	"time"
-	"fmt"
 )
 
 const (
@@ -23,12 +24,20 @@ const (
 
 var lmrTable [MaxDepth][64]int
 
-func init() {
+func RebuildLMRTable() {
+	p := persona.ActivePersona
+	if p == nil {
+		p = persona.DefaultPersona()
+	}
 	for depth := 1; depth < MaxDepth; depth++ {
 		for moves := 1; moves < 64; moves++ {
-			lmrTable[depth][moves] = int(0.7844 + math.Log(float64(depth))*math.Log(float64(moves))/2.4696)
+			lmrTable[depth][moves] = int(p.LMRBase + math.Log(float64(depth))*math.Log(float64(moves))/p.LMRMultiplier)
 		}
 	}
+}
+
+func init() {
+	RebuildLMRTable()
 }
 
 func applyHistoryBonus(entry *int, bonus int, maxVal int) {
@@ -116,6 +125,11 @@ func (s *Searcher) SearchWithLimits(b *board.Board, limits Limits) (move.Move, i
 	s.Stopped.Store(false)
 	s.StartTime = time.Now()
 
+	p := persona.ActivePersona
+	if p == nil {
+		p = persona.DefaultPersona()
+	}
+
 	if limits.MoveTime > 0 {
 		s.SoftTime = limits.MoveTime
 		s.HardTime = limits.MoveTime
@@ -129,8 +143,8 @@ func (s *Searcher) SearchWithLimits(b *board.Board, limits Limits) (move.Move, i
 		optTime := limits.Time / time.Duration(movesToGo)
 		maxTime := limits.Time / 3 // Hard limit is 1/3 of remaining time
 
-		s.SoftTime = optTime + (limits.Inc * 3 / 4)
-		s.HardTime = maxTime
+		s.SoftTime = time.Duration(float64(optTime+(limits.Inc*3/4)) * p.TimeAggression)
+		s.HardTime = time.Duration(float64(maxTime) * p.TimeAggression)
 		
 		if s.SoftTime < 50*time.Millisecond {
 			s.SoftTime = 50 * time.Millisecond
@@ -226,7 +240,11 @@ func (w *Worker) runMainSearch(maxDepth int) (move.Move, int) {
 			}
 		}
 
-		window := 25
+		p := persona.ActivePersona
+		if p == nil {
+			p = persona.DefaultPersona()
+		}
+		window := p.AspirationWindow
 		if depth >= 4 {
 			alpha = overallBestScore - window
 			beta = overallBestScore + window

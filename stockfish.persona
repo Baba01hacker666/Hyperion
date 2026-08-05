@@ -1,0 +1,10 @@
+{
+  "name": "Stockfish-Counter",
+  "eval_style": "Gamble",
+  "time_aggression": 1.2798187634426412,
+  "lmr_base": 0.9453702279164413,
+  "lmr_multiplier": 2.6463714955402926,
+  "aspiration_window": 18,
+  "mobility_weight": 0.8017417290364924,
+  "king_safety_weight": 0.8248304780581882
+}
