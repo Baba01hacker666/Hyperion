@@ -62,9 +62,11 @@ func (e *Engine) expect(target string) string {
 	}
 }
 
-func (e *Engine) getBestMove(fen string, depth int, movetime int) (string, string) {
+func (e *Engine) getBestMove(fen string, depth int, movetime int, timeMs int) (string, string) {
 	e.send(fmt.Sprintf("position fen %s", fen))
-	if movetime > 0 {
+	if timeMs > 0 {
+		e.send(fmt.Sprintf("go wtime %d btime %d", timeMs, timeMs))
+	} else if movetime > 0 {
 		e.send(fmt.Sprintf("go movetime %d", movetime))
 	} else {
 		e.send(fmt.Sprintf("go depth %d", depth))
@@ -180,13 +182,13 @@ func main() {
 				if blitzMode {
 					mt = *movetime
 				}
-				moveStr, info = hyperion.getBestMove(currentFEN, *hyperionDepth, mt)
+				moveStr, info = hyperion.getBestMove(currentFEN, *hyperionDepth, mt, 0)
 			} else {
 				mt := 0
 				if blitzMode {
 					mt = *sfMovetime
 				}
-				moveStr, info = stockfish.getBestMove(currentFEN, *sfDepth, mt)
+				moveStr, info = stockfish.getBestMove(currentFEN, *sfDepth, mt, 0)
 			}
 			elapsed := time.Since(start)
 

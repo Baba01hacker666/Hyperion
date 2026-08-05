@@ -26,7 +26,7 @@ var lmrTable [MaxDepth][64]int
 func init() {
 	for depth := 1; depth < MaxDepth; depth++ {
 		for moves := 1; moves < 64; moves++ {
-			lmrTable[depth][moves] = int(0.75 + math.Log(float64(depth))*math.Log(float64(moves))/2.25)
+			lmrTable[depth][moves] = int(0.7844 + math.Log(float64(depth))*math.Log(float64(moves))/2.4696)
 		}
 	}
 }
@@ -58,7 +58,9 @@ type Searcher struct {
 	Threads   int
 	TT        *tt.Table
 	StartTime time.Time
-	MaxTime   time.Duration
+	SoftTime  time.Duration
+	HardTime  time.Duration
+	MaxTime   time.Duration // Legacy max time if needed
 	Stopped   atomic.Bool
 	Nodes     atomic.Uint64
 }
@@ -115,24 +117,39 @@ func (s *Searcher) SearchWithLimits(b *board.Board, limits Limits) (move.Move, i
 	s.StartTime = time.Now()
 
 	if limits.MoveTime > 0 {
-		s.MaxTime = limits.MoveTime
+		s.SoftTime = limits.MoveTime
+		s.HardTime = limits.MoveTime
 	} else if limits.Time > 0 {
 		movesToGo := limits.MovesToGo
 		if movesToGo <= 0 {
-			movesToGo = 30
+			movesToGo = 40 // Assume roughly 40 moves left on average
 		}
-		s.MaxTime = (limits.Time / time.Duration(movesToGo)) + (limits.Inc * 3 / 4)
-		if s.MaxTime < 50*time.Millisecond {
-			s.MaxTime = 50 * time.Millisecond
+		
+		// Ethereal-style time management
+		optTime := limits.Time / time.Duration(movesToGo)
+		maxTime := limits.Time / 3 // Hard limit is 1/3 of remaining time
+
+		s.SoftTime = optTime + (limits.Inc * 3 / 4)
+		s.HardTime = maxTime
+		
+		if s.SoftTime < 50*time.Millisecond {
+			s.SoftTime = 50 * time.Millisecond
+		}
+		if s.HardTime < s.SoftTime {
+			s.HardTime = s.SoftTime
 		}
 	} else {
-		s.MaxTime = 4000 * time.Millisecond
+		s.SoftTime = 4000 * time.Millisecond
+		s.HardTime = 4000 * time.Millisecond
 		if evaluation.CurrentStyle == evaluation.StyleEvil {
-			s.MaxTime = 12000 * time.Millisecond
+			s.SoftTime = 12000 * time.Millisecond
+			s.HardTime = 12000 * time.Millisecond
 		} else if evaluation.CurrentStyle == evaluation.StyleBlitz {
-			s.MaxTime = 1000 * time.Millisecond
+			s.SoftTime = 1000 * time.Millisecond
+			s.HardTime = 1000 * time.Millisecond
 		}
 	}
+	s.MaxTime = s.HardTime // Fallback compatibility
 
 	maxDepth := limits.Depth
 	if maxDepth <= 0 {
@@ -183,13 +200,30 @@ func (w *Worker) runMainSearch(maxDepth int) (move.Move, int) {
 	alpha := -Infinity
 	beta := Infinity
 
+	var prevBestMove move.Move
+	bestMoveStability := 0
+
 	for depth := 1; depth <= maxDepth; depth++ {
 		if w.searcher.Stopped.Load() {
 			break
 		}
-		if depth > 1 && time.Since(w.searcher.StartTime) > w.searcher.MaxTime {
+
+		elapsed := time.Since(w.searcher.StartTime)
+		
+		// Hard Time Check
+		if depth > 1 && elapsed > w.searcher.HardTime {
 			w.searcher.Stopped.Store(true)
 			break
+		}
+		
+		// Soft Time Check
+		// If we've passed our soft time, and the best move is stable (hasn't changed for 2 depths)
+		// OR we've used up a huge chunk of time (e.g. 70% of HardTime), stop early.
+		if depth > 1 && elapsed > w.searcher.SoftTime {
+			if bestMoveStability >= 2 || elapsed > (w.searcher.HardTime * 70 / 100) {
+				w.searcher.Stopped.Store(true)
+				break
+			}
 		}
 
 		window := 25
@@ -247,6 +281,13 @@ func (w *Worker) runMainSearch(maxDepth int) (move.Move, int) {
 		}
 
 		if !w.searcher.Stopped.Load() {
+			if overallBestMove == prevBestMove {
+				bestMoveStability++
+			} else {
+				bestMoveStability = 0
+			}
+			prevBestMove = overallBestMove
+
 			elapsed := time.Since(w.searcher.StartTime).Milliseconds()
 			nodes := w.searcher.Nodes.Load()
 			var nps int64
