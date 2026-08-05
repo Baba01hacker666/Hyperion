@@ -1,17 +1,18 @@
 package search
 
 import (
-	"fmt"
 	"hyperion/internal/attack"
 	"hyperion/internal/board"
 	"hyperion/internal/evaluation"
 	"hyperion/internal/move"
 	"hyperion/internal/movegen"
 	"hyperion/internal/tt"
+	"hyperion/internal/zobrist"
 	"math"
 	"sync"
 	"sync/atomic"
 	"time"
+	"fmt"
 )
 
 const (
@@ -475,20 +476,28 @@ func (w *Worker) alphaBeta(b *board.Board, depth, alpha, beta, ply int, prevMove
 		nonPawnPieces := b.Colors[us] &^ b.Pieces[board.Pawn] &^ b.Pieces[board.King]
 		if nonPawnPieces != 0 {
 			b.SideToMove = them
+			b.Hash ^= zobrist.SideToMove
 			oldEP := b.EnPassant
+			if oldEP != board.NoSquare {
+				b.Hash ^= zobrist.EnPassant[oldEP]
+			}
 			b.EnPassant = board.NoSquare
 
 			R := 3 + depth/4
 			nullScore := -w.alphaBeta(b, depth-1-R, -beta, -beta+1, ply+1, move.NullMove, board.NoPieceType)
 
 			b.SideToMove = us
+			b.Hash ^= zobrist.SideToMove
+			if oldEP != board.NoSquare {
+				b.Hash ^= zobrist.EnPassant[oldEP]
+			}
 			b.EnPassant = oldEP
 
 			if w.searcher.Stopped.Load() {
 				return 0
 			}
 
-			if nullScore >= beta {
+			if nullScore >= beta && abs(nullScore) < MateVal-100 {
 				return beta
 			}
 		}
@@ -871,4 +880,11 @@ func (w *Worker) orderMoves(b *board.Board, list *movegen.MoveList, ttMove move.
 			scores[i], scores[bestIdx] = scores[bestIdx], scores[i]
 		}
 	}
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

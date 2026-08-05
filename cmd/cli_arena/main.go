@@ -135,6 +135,7 @@ func main() {
 		}
 		hyperion.send(fmt.Sprintf("setoption name Style value %s", *style))
 		hyperion.send("setoption name Hash value 128")
+		hyperion.send("setoption name Threads value 8")
 		hyperion.send("ucinewgame")
 		hyperion.send("isready")
 		hyperion.expect("readyok")
